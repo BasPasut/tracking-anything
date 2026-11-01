@@ -44,10 +44,28 @@ type Progress = ReturnType<typeof makeProgress>;
 /** Set by the TrackNet setup for the clip being analyzed. */
 let cameraMotion: number | undefined;
 
-type Session = { sess: ort.InferenceSession; backend: string; check?: ort.InferenceSession };
+/**
+ * GPU set-ups to try, in order. Some GPUs compute the model wrongly in one set-up and
+ * correctly in another (the default NHWC layout, or the optimized graph, is where
+ * driver bugs usually show), so each is checked against the CPU before it is used.
+ */
+const GPU_CONFIGS: { label: string; options: ort.InferenceSession.SessionOptions }[] = [
+  { label: "GPU", options: { executionProviders: ["webgpu"] } },
+  { label: "GPU NCHW", options: { executionProviders: [{ name: "webgpu", preferredLayout: "NCHW" }] } },
+  { label: "GPU NCHW basic", options: { executionProviders: [{ name: "webgpu", preferredLayout: "NCHW" }], graphOptimizationLevel: "basic" } },
+];
+
+type Session = {
+  sess: ort.InferenceSession;
+  backend: string;
+  /** GPU only: a CPU copy of the model to check against, and the model bytes for the next set-up. */
+  check?: ort.InferenceSession;
+  model?: Uint8Array;
+  config?: number;
+};
 let session: Promise<Session> | null = null;
 
-/** Thrown when the GPU's output fails the check against the CPU. */
+/** Thrown when no GPU set-up matches the CPU. */
 class GpuMismatch extends Error {}
 /** How many model runs the GPU is checked against the CPU on, at most. */
 const GPU_CHECKS = 4;
@@ -95,10 +113,16 @@ function getSession(progress: Progress, safe: boolean, noGpu: boolean) {
     const cpu = `CPU ${threads} threads`;
     if (adapter) {
       try {
-        const sess = await ort.InferenceSession.create(model, { executionProviders: ["webgpu"] });
         // A CPU copy of the same model to check the GPU's first results against.
         const check = await ort.InferenceSession.create(model, { executionProviders: ["wasm"] });
-        return { sess, check, backend: "GPU" };
+        for (let config = 0; config < GPU_CONFIGS.length; config++) {
+          try {
+            const sess = await ort.InferenceSession.create(model, GPU_CONFIGS[config].options);
+            return { sess, check, model, config, backend: GPU_CONFIGS[config].label };
+          } catch {
+            // This set-up failed to build; try the next.
+          }
+        }
       } catch {
         // The GPU could not run the model: fall back to WASM.
       }
@@ -119,8 +143,7 @@ async function runModel(sess: ort.InferenceSession, input: Float32Array) {
 
 async function makeTrackNet(video: Awaited<ReturnType<Input["getPrimaryVideoTrack"]>> & object, duration: number, progress: Progress, safe: boolean, noGpu: boolean) {
   const s = await getSession(progress, safe, noGpu);
-  const { sess, backend } = s;
-  post({ type: "info", backend });
+  post({ type: "info", backend: s.backend });
   // Background: median of frames spread evenly over the clip.
   const sink = new CanvasSink(video, { width: TRACKNET_WIDTH, height: TRACKNET_HEIGHT, fit: "fill" });
   const start = await video.getFirstTimestamp();
@@ -135,23 +158,43 @@ async function makeTrackNet(video: Awaited<ReturnType<Input["getPrimaryVideoTrac
   const background = medianBackground(frames);
   cameraMotion = cameraMotionScore(frames, background);
   // Some GPUs return heatmaps that miss the shuttle. Until the CPU copy has seen a
-  // shuttle (or GPU_CHECKS runs passed), run both and compare.
+  // shuttle (or GPU_CHECKS runs passed), run both and compare; on a mismatch move on
+  // to the next GPU set-up, and give up on the GPU when none is left.
   let checks = 0;
+  const diffs: string[] = [];
   const run = async (input: Float32Array) => {
-    const data = await runModel(sess, input);
-    if (s.check && checks < GPU_CHECKS) {
-      checks++;
-      const ref = await runModel(s.check, input);
+    let data = await runModel(s.sess, input);
+    if (!s.check || checks >= GPU_CHECKS) return data;
+    checks++;
+    const ref = await runModel(s.check, input);
+    for (;;) {
       let diff = 0, peak = 0;
       for (let i = 0; i < ref.length; i++) {
         const d = Math.abs(ref[i] - data[i]);
         if (!(d <= diff)) diff = d; // also catches NaN from the GPU
         if (ref[i] > peak) peak = ref[i];
       }
-      if (!(diff <= GPU_TOLERANCE)) throw new GpuMismatch(`max diff ${diff.toFixed(2)}`);
-      if (peak > 0.5) checks = GPU_CHECKS;
+      if (diff <= GPU_TOLERANCE) {
+        if (peak > 0.5) {
+          // Verified on a real shuttle: later runs and clips trust this set-up.
+          checks = GPU_CHECKS;
+          s.check.release().catch(() => {});
+          s.check = undefined;
+        }
+        return data;
+      }
+      diffs.push(`${GPU_CONFIGS[s.config!].label} ${diff.toFixed(2)}`);
+      s.sess.release().catch(() => {});
+      let next: ort.InferenceSession | null = null;
+      while (!next && ++s.config! < GPU_CONFIGS.length) {
+        next = await ort.InferenceSession.create(s.model!, GPU_CONFIGS[s.config!].options).catch(() => null);
+      }
+      if (!next) throw new GpuMismatch(diffs.join(", "));
+      s.sess = next;
+      s.backend = GPU_CONFIGS[s.config!].label;
+      post({ type: "info", backend: s.backend });
+      data = await runModel(s.sess, input);
     }
-    return data;
   };
   return new TrackNetDetector(run, background);
 }

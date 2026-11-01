@@ -9,7 +9,8 @@ import type { DetectorKind, WorkerRequest, WorkerResponse } from "@/lib/worker-p
 import { CameraCapture } from "@/components/camera-capture";
 
 /** Set once this browser's GPU has failed the check against the CPU; later runs skip the GPU. */
-const NO_GPU_KEY = "shuttle-tracker.no-gpu";
+// Versioned: a new set of GPU set-ups to try clears the old verdict.
+const NO_GPU_KEY = "shuttle-tracker.no-gpu.v2";
 function gpuDistrusted() {
   try { return !!localStorage.getItem(NO_GPU_KEY); } catch { return false; }
 }
@@ -92,7 +93,7 @@ export function Studio() {
           w.terminate();
           workerRef.current = null;
           if (p?.req.type === "analyze") {
-            setNotice("GPU ของเครื่องนี้ให้ผลไม่ตรงกับ CPU เลยเปลี่ยนไปประมวลผลด้วย CPU แทน (ช้ากว่าแต่แม่นกว่า)");
+            setNotice(`GPU ของเครื่องนี้ให้ผลไม่ตรงกับ CPU เลยเปลี่ยนไปประมวลผลด้วย CPU แทน (ช้ากว่าแต่แม่นกว่า) [${m.detail}]`);
             send({ ...p.req, noGpu: true });
           }
         }
