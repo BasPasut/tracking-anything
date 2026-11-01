@@ -81,3 +81,12 @@ describe('court calibration and speed', () => {
     expect(out.rallies[0].shots[0].initialSpeedKmh).toBeCloseTo(90, 0);
   });
 });
+
+describe('camera motion score', () => {
+  it('is near zero for a still background and high when the picture shifts', async () => {
+    const { cameraMotionScore } = await import('../src');
+    const bg = solid(100, 8, 8);
+    expect(cameraMotionScore([solid(100, 8, 8), solid(102, 8, 8), solid(100, 8, 8)], bg)).toBeLessThan(2);
+    expect(cameraMotionScore([solid(160, 8, 8), solid(40, 8, 8), solid(150, 8, 8)], bg)).toBeGreaterThan(40);
+  });
+});
