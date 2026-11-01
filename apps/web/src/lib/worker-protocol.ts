@@ -4,7 +4,7 @@ import type { OverlayStyle, Track } from "@app/vision";
 export type DetectorKind = "tracknet" | "motion";
 
 export type WorkerRequest =
-  | { type: "analyze"; file: File; detector: DetectorKind }
+  | { type: "analyze"; file: File; detector: DetectorKind; safe?: boolean }
   | { type: "export"; file: File; track: Track; style: OverlayStyle };
 
 export type WorkerResponse =

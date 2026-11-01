@@ -63,18 +63,24 @@ async function fetchWithProgress(url: string, progress: Progress): Promise<Uint8
   return out;
 }
 
-function getSession(progress: Progress) {
+const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+function getSession(progress: Progress, safe: boolean) {
   session ??= (async () => {
     // Served from public/ort (copied there by scripts/copy-ort.mjs).
     ort.env.wasm.wasmPaths = `${self.location.origin}/ort/`;
     // Multithreaded WASM needs cross-origin isolation (COOP/COEP headers in next.config).
-    const threads = self.crossOriginIsolated ? Math.max(1, Math.min(8, navigator.hardwareConcurrency || 4)) : 1;
+    // Safe mode (a retry after a stall) and phones use fewer threads: shared memory for
+    // many threads is what mobile browsers are most likely to refuse.
+    const maxThreads = safe ? 1 : isMobile ? 4 : 8;
+    const threads = self.crossOriginIsolated ? Math.max(1, Math.min(maxThreads, navigator.hardwareConcurrency || 4)) : 1;
     ort.env.wasm.numThreads = threads;
     type Gpu = { requestAdapter(): Promise<{ features: Set<string> } | null> };
     const gpu = (navigator as Navigator & { gpu?: Gpu }).gpu;
-    const adapter = gpu ? await gpu.requestAdapter().catch(() => null) : null;
+    const adapter = safe || !gpu ? null : await gpu.requestAdapter().catch(() => null);
     const f16 = !!adapter?.features.has("shader-f16");
-    const model = await fetchWithProgress(f16 ? MODEL_FP16 : MODEL_FP32, progress);
+    // fp32 only for a GPU without f16. On CPU fp16 runs as fast and needs half the memory.
+    const model = await fetchWithProgress(adapter && !f16 ? MODEL_FP32 : MODEL_FP16, progress);
     const cpu = `CPU ${threads} threads`;
     if (adapter) {
       try {
@@ -88,8 +94,8 @@ function getSession(progress: Progress) {
   return session;
 }
 
-async function makeTrackNet(video: Awaited<ReturnType<Input["getPrimaryVideoTrack"]>> & object, duration: number, progress: Progress) {
-  const { sess, backend } = await getSession(progress);
+async function makeTrackNet(video: Awaited<ReturnType<Input["getPrimaryVideoTrack"]>> & object, duration: number, progress: Progress, safe: boolean) {
+  const { sess, backend } = await getSession(progress, safe);
   post({ type: "info", backend });
   // Background: median of frames spread evenly over the clip.
   const sink = new CanvasSink(video, { width: TRACKNET_WIDTH, height: TRACKNET_HEIGHT, fit: "fill" });
@@ -114,8 +120,10 @@ async function makeTrackNet(video: Awaited<ReturnType<Input["getPrimaryVideoTrac
   return new TrackNetDetector(run, background);
 }
 
-async function analyze(file: File, kind: DetectorKind) {
+async function analyze(file: File, kind: DetectorKind, safe: boolean) {
   const started = performance.now();
+  // First sign of life, so the page knows the worker is running.
+  post({ type: "progress", stage: "load", value: 0 });
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   const video = await input.getPrimaryVideoTrack();
   if (!video) throw new Error("ไม่พบ video track ในไฟล์นี้");
@@ -126,7 +134,7 @@ async function analyze(file: File, kind: DetectorKind) {
   // Rough share of total time per stage; a model already loaded costs nothing.
   const progress = makeProgress({ load: tracknet && !session ? 0.12 : 0, background: tracknet ? 0.05 : 0, analyze: 1 });
   progress("load", 0);
-  const detector = tracknet ? await makeTrackNet(video, duration, progress) : new MotionDetector();
+  const detector = tracknet ? await makeTrackNet(video, duration, progress, safe) : new MotionDetector();
   if (!tracknet) post({ type: "info", backend: "CPU" });
   // TrackNet has a fixed input size; the motion detector keeps the aspect ratio.
   const w = tracknet ? TRACKNET_WIDTH : Math.min(ANALYZE_WIDTH, video.displayWidth);
@@ -182,9 +190,14 @@ async function exportVideo({ file, track, style }: Extract<WorkerRequest, { type
   post({ type: "exported", buffer, mimeType: "video/mp4" }, [buffer]);
 }
 
+// Errors outside the request handler (inside ONNX Runtime callbacks) still reach the page.
+self.addEventListener("unhandledrejection", (e) => {
+  post({ type: "error", message: e.reason instanceof Error ? e.reason.message : String(e.reason) });
+});
+
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   try {
-    if (e.data.type === "analyze") await analyze(e.data.file, e.data.detector);
+    if (e.data.type === "analyze") await analyze(e.data.file, e.data.detector, !!e.data.safe);
     else await exportVideo(e.data);
   } catch (err) {
     post({ type: "error", message: err instanceof Error ? err.message : String(err) });

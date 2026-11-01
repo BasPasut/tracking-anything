@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyCourtCalibration, defaultStyle, renderCourt, renderOverlay, trackToCsv, trackToJson,
   type OverlayStyle, type Point, type Track,
@@ -13,6 +13,9 @@ type Status =
   | { kind: "busy"; stage: "load" | "background" | "analyze" | "export"; value: number }
   | { kind: "ready" }
   | { kind: "error"; message: string };
+
+/** Wall clock for the stall watchdog (kept outside the component: it is only read in handlers). */
+const clock = () => performance.now();
 
 function download(data: BlobPart, name: string, type: string) {
   const url = URL.createObjectURL(new Blob([data], { type }));
@@ -41,12 +44,22 @@ export function Studio() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workerRef = useRef<Worker | null>(null);
+  /** The request in flight and when the worker last said anything, for the stall watchdog. */
+  const pendingRef = useRef<{ req: WorkerRequest; lastMsg: number; heard: boolean } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const getWorker = useCallback(() => {
+  // Plain functions: they only touch refs and state setters, so the copies bound to the
+  // worker's handlers stay valid across renders.
+  function getWorker() {
     if (!workerRef.current) {
       const w = new Worker(new URL("../workers/vision.worker.ts", import.meta.url), { type: "module" });
+      w.onerror = (e) => { e.preventDefault(); fail(`โหลดตัวประมวลผลไม่ได้${e.message ? `: ${e.message}` : ""}`); };
+      w.onmessageerror = () => fail("รับข้อมูลจากตัวประมวลผลไม่ได้");
       w.onmessage = (e: MessageEvent<WorkerResponse>) => {
         const m = e.data;
+        const p = pendingRef.current;
+        if (p) { p.lastMsg = performance.now(); p.heard = true; }
+        if (m.type === "analyzed" || m.type === "exported" || m.type === "error") pendingRef.current = null;
         if (m.type === "progress") {
           setStatus({ kind: "busy", stage: m.stage, value: m.value });
           // Estimate time left from the rate of the current stage: the model download
@@ -64,11 +77,47 @@ export function Studio() {
       workerRef.current = w;
     }
     return workerRef.current;
-  }, []);
+  }
 
   useEffect(() => () => workerRef.current?.terminate(), []);
 
-  const send = (req: WorkerRequest) => getWorker().postMessage(req);
+  function send(req: WorkerRequest) {
+    pendingRef.current = { req, lastMsg: clock(), heard: false };
+    getWorker().postMessage(req);
+  }
+
+  // A worker that crashed or hung (a phone browser killing it for memory, say) sends
+  // nothing. Restart it once in safe mode (one CPU thread, small model), then give up
+  // with an error instead of a progress bar that never moves.
+  function fail(reason: string) {
+    const p = pendingRef.current;
+    pendingRef.current = null;
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    etaRef.current = null;
+    setEta(null);
+    if (p && p.req.type === "analyze" && p.req.detector === "tracknet" && !p.req.safe) {
+      setNotice("ประมวลผลแบบปกติไม่สำเร็จ กำลังลองใหม่แบบประหยัดหน่วยความจำ (ช้ากว่า)");
+      setStatus({ kind: "busy", stage: "load", value: 0 });
+      send({ ...p.req, safe: true });
+      return;
+    }
+    setStatus({ kind: "error", message: `${reason} ลองใช้ Chrome หรือ Edge รุ่นล่าสุด หรือเลือกตัวจับลูกแบบ Motion` });
+  }
+
+  useEffect(() => {
+    if (status.kind !== "busy") return;
+    const id = setInterval(() => {
+      const p = pendingRef.current;
+      if (!p) return;
+      const quiet = performance.now() - p.lastMsg;
+      if (!p.heard && quiet > 20_000) fail("ตัวประมวลผลไม่ตอบสนอง");
+      else if (quiet > 120_000) fail("ประมวลผลค้าง ไม่มีความคืบหน้าเกิน 2 นาที");
+    }, 5000);
+    return () => clearInterval(id);
+    // `fail` only uses refs and setters, so the first copy is as good as any.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status.kind]);
 
   const onFile = (f: File | undefined) => {
     if (!f) return;
@@ -79,6 +128,7 @@ export function Studio() {
     setCorners([]);
     setCalibrating(false);
     setElapsed(null);
+    setNotice(null);
     setTrack(null);
     setStatus({ kind: "busy", stage: "analyze", value: 0 });
     send({ type: "analyze", file: f, detector });
@@ -189,6 +239,7 @@ export function Studio() {
             </div>
           </div>
         )}
+        {notice && status.kind === "busy" && <p className="text-sm text-amber-600">{notice}</p>}
         {status.kind === "error" && <p className="text-sm text-red-600">เกิดข้อผิดพลาด: {status.message}</p>}
       </section>
 
