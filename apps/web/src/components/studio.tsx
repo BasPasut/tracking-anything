@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultStyle, renderOverlay, trackToCsv, trackToJson, type OverlayStyle, type Track } from "@app/vision";
 import type { WorkerRequest, WorkerResponse } from "@/lib/worker-protocol";
+import { CameraCapture } from "@/components/camera-capture";
 
 type Status =
   | { kind: "idle" }
@@ -25,6 +26,7 @@ export function Studio() {
   const [track, setTrack] = useState<Track | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [style, setStyle] = useState<OverlayStyle>(defaultStyle);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workerRef = useRef<Worker | null>(null);
@@ -50,6 +52,7 @@ export function Studio() {
 
   const onFile = (f: File | undefined) => {
     if (!f) return;
+    setCameraOpen(false);
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setFile(f);
     setVideoUrl(URL.createObjectURL(f));
@@ -99,16 +102,21 @@ export function Studio() {
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
       <section className="flex flex-col gap-3">
-        {!videoUrl ? (
-          <label
-            className="flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:border-zinc-500 dark:border-zinc-700"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => { e.preventDefault(); onFile(e.dataTransfer.files[0]); }}
-          >
-            <span className="text-lg font-medium">ลากไฟล์วิดีโอมาวาง หรือคลิกเพื่อเลือก</span>
-            <span className="text-sm">MP4 / MOV / WebM · กล้องตั้งนิ่ง 60 fps ขึ้นไปจะแม่นที่สุด</span>
-            <input type="file" accept="video/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
-          </label>
+        {!videoUrl && cameraOpen ? (
+          <CameraCapture onRecorded={onFile} onCancel={() => setCameraOpen(false)} />
+        ) : !videoUrl ? (
+          <div className="flex flex-col gap-3">
+            <label
+              className="flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:border-zinc-500 dark:border-zinc-700"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); onFile(e.dataTransfer.files[0]); }}
+            >
+              <span className="text-lg font-medium">ลากไฟล์วิดีโอมาวาง หรือคลิกเพื่อเลือก</span>
+              <span className="text-sm">MP4 / MOV / WebM · กล้องตั้งนิ่ง 60 fps ขึ้นไปจะแม่นที่สุด</span>
+              <input type="file" accept="video/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
+            </label>
+            <button className="btn self-start" onClick={() => setCameraOpen(true)}>ถ่ายจากกล้องแทน</button>
+          </div>
         ) : (
           <div className="relative overflow-hidden rounded-xl bg-black">
             <video ref={videoRef} src={videoUrl} controls playsInline className="block w-full" />
