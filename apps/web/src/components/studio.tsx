@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultStyle, renderOverlay, trackToCsv, trackToJson, type OverlayStyle, type Track } from "@app/vision";
-import type { WorkerRequest, WorkerResponse } from "@/lib/worker-protocol";
+import type { DetectorKind, WorkerRequest, WorkerResponse } from "@/lib/worker-protocol";
 import { CameraCapture } from "@/components/camera-capture";
 
 type Status =
   | { kind: "idle" }
-  | { kind: "busy"; stage: "analyze" | "export"; value: number }
+  | { kind: "busy"; stage: "load" | "background" | "analyze" | "export"; value: number }
   | { kind: "ready" }
   | { kind: "error"; message: string };
 
@@ -27,6 +27,7 @@ export function Studio() {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [style, setStyle] = useState<OverlayStyle>(defaultStyle);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [detector, setDetector] = useState<DetectorKind>("tracknet");
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workerRef = useRef<Worker | null>(null);
@@ -58,7 +59,15 @@ export function Studio() {
     setVideoUrl(URL.createObjectURL(f));
     setTrack(null);
     setStatus({ kind: "busy", stage: "analyze", value: 0 });
-    send({ type: "analyze", file: f });
+    send({ type: "analyze", file: f, detector });
+  };
+
+  const reanalyze = (kind: DetectorKind) => {
+    setDetector(kind);
+    if (!file) return;
+    setTrack(null);
+    setStatus({ kind: "busy", stage: "analyze", value: 0 });
+    send({ type: "analyze", file, detector: kind });
   };
 
   // Draw the overlay in sync with the video using the same renderer as the export.
@@ -126,7 +135,7 @@ export function Studio() {
         )}
         {status.kind === "busy" && (
           <div className="flex items-center gap-3 text-sm">
-            <span>{status.stage === "analyze" ? "กำลังจับลูก" : "กำลัง export วิดีโอ"} {Math.round(status.value * 100)}%</span>
+            <span>{STAGE_LABEL[status.stage]} {Math.round(status.value * 100)}%</span>
             <div className="h-2 flex-1 rounded bg-zinc-200 dark:bg-zinc-800">
               <div className="h-2 rounded bg-sky-500" style={{ width: `${status.value * 100}%` }} />
             </div>
@@ -145,6 +154,15 @@ export function Studio() {
             </button>
           </div>
         )}
+
+        <label className="flex items-center justify-between gap-3">
+          <span className="font-medium">ตัวจับลูก</span>
+          <select className="min-h-11 rounded-lg border border-zinc-300 bg-transparent px-2 dark:border-zinc-700" value={detector} disabled={busy}
+            onChange={(e) => reanalyze(e.target.value as DetectorKind)}>
+            <option value="tracknet">TrackNetV3 (กล้องขาตั้ง)</option>
+            <option value="motion">Motion แบบง่าย</option>
+          </select>
+        </label>
 
         {stats && (
           <div className="grid grid-cols-4 gap-1.5 md:grid-cols-2 md:gap-2">
@@ -191,12 +209,19 @@ export function Studio() {
         </>)}
 
         <p className="hidden text-xs text-zinc-500 md:block">
-          ตอนนี้ใช้ตัวจับการเคลื่อนไหวแบบง่ายเป็นตัวชั่วคราว จะเปลี่ยนเป็น model TrackNet หลังผ่านเฟส 0
+          TrackNetV3 ต้องใช้กล้องตั้งนิ่ง ถ่ายแนวนอนเห็นคอร์ท ครั้งแรกจะโหลด model ประมาณ 23 MB
         </p>
       </aside>
     </div>
   );
 }
+
+const STAGE_LABEL = {
+  load: "กำลังโหลด model",
+  background: "กำลังหาพื้นหลังคอร์ท",
+  analyze: "กำลังจับลูก",
+  export: "กำลัง export วิดีโอ",
+} as const;
 
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
