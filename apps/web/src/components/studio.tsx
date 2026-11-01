@@ -100,14 +100,14 @@ export function Studio() {
   const busy = status.kind === "busy";
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
-      <section className="flex flex-col gap-3">
+    <div className="studio grid gap-6">
+      <section className="studio-media flex min-w-0 flex-col gap-3">
         {!videoUrl && cameraOpen ? (
           <CameraCapture onRecorded={onFile} onCancel={() => setCameraOpen(false)} />
         ) : !videoUrl ? (
           <div className="flex flex-col gap-3">
             <label
-              className="flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:border-zinc-500 dark:border-zinc-700"
+              className="media-frame flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:border-zinc-500 dark:border-zinc-700"
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => { e.preventDefault(); onFile(e.dataTransfer.files[0]); }}
             >
@@ -118,8 +118,9 @@ export function Studio() {
             <button className="btn self-start" onClick={() => setCameraOpen(true)}>ถ่ายจากกล้องแทน</button>
           </div>
         ) : (
-          <div className="relative overflow-hidden rounded-xl bg-black">
-            <video ref={videoRef} src={videoUrl} controls playsInline className="block w-full" />
+          // Shrink-wrap the video so the overlay canvas covers exactly the picture, with no letterbox.
+          <div className="relative mx-auto w-fit max-w-full overflow-hidden rounded-xl bg-black">
+            <video ref={videoRef} src={videoUrl} controls playsInline className="media-frame block h-auto w-auto max-w-full" />
             <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
           </div>
         )}
@@ -134,51 +135,62 @@ export function Studio() {
         {status.kind === "error" && <p className="text-sm text-red-600">เกิดข้อผิดพลาด: {status.message}</p>}
       </section>
 
-      <aside className="flex flex-col gap-5 text-sm">
+      <aside className="studio-panel flex flex-col gap-3 text-sm md:gap-5">
+        {videoUrl && (
+          <div className="flex items-center justify-between">
+            <span className="font-medium">ผลการวิเคราะห์</span>
+            <button className="text-zinc-500 underline" disabled={busy}
+              onClick={() => { setVideoUrl(null); setFile(null); setTrack(null); setStatus({ kind: "idle" }); }}>
+              เปลี่ยนวิดีโอ
+            </button>
+          </div>
+        )}
+
         {stats && (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-4 gap-1.5 md:grid-cols-2 md:gap-2">
             <Stat label="Rally" value={stats.rallies} />
             <Stat label="ช็อต" value={stats.shots} />
-            <Stat label="เฟรมที่เห็นลูก" value={`${Math.round((stats.visible / stats.frames) * 100)}%`} />
+            <Stat label="เห็นลูก" value={`${Math.round((stats.visible / stats.frames) * 100)}%`} />
             <Stat label="fps" value={track!.fps.toFixed(0)} />
           </div>
         )}
 
-        <fieldset className="flex flex-col gap-2" disabled={!track}>
-          <legend className="mb-1 font-medium">รูปแบบเส้น</legend>
-          <label className="flex items-center justify-between gap-2">
-            หางลูก (เฟรม)
-            <input type="range" min={0} max={60} value={style.trailFrames} onChange={(e) => setStyle({ ...style, trailFrames: +e.target.value })} />
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={style.showShotPath} onChange={(e) => setStyle({ ...style, showShotPath: e.target.checked })} />
-            เส้นวิถีทั้งช็อต
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={style.showMarkers} onChange={(e) => setStyle({ ...style, showMarkers: e.target.checked })} />
-            จุดตี / จุดสูงสุด / จุดตก
-          </label>
-        </fieldset>
-
-        <div className="flex flex-col gap-2">
-          <span className="font-medium">Export</span>
-          <button className="btn" disabled={!track || busy} onClick={() => file && track && send({ type: "export", file, track, style })}>
-            วิดีโอ MP4 พร้อมเส้น
+        {videoUrl && (<>
+        <div className="grid grid-cols-3 gap-1.5 md:grid-cols-1 md:gap-2">
+          <button className="btn text-center md:text-left" disabled={!track || busy} onClick={() => file && track && send({ type: "export", file, track, style })}>
+            <span className="md:hidden">MP4</span><span className="hidden md:inline">Export วิดีโอ MP4 พร้อมเส้น</span>
           </button>
-          <button className="btn" disabled={!track} onClick={() => track && download(trackToCsv(track), "shuttle-track.csv", "text/csv")}>
-            ข้อมูล CSV
+          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToCsv(track), "shuttle-track.csv", "text/csv")}>
+            CSV<span className="hidden md:inline">&nbsp;ข้อมูลรายเฟรม</span>
           </button>
-          <button className="btn" disabled={!track} onClick={() => track && download(trackToJson(track), "shuttle-track.json", "application/json")}>
-            ข้อมูล JSON
+          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToJson(track), "shuttle-track.json", "application/json")}>
+            JSON
           </button>
         </div>
 
-        {videoUrl && (
-          <button className="text-left text-zinc-500 underline" disabled={busy} onClick={() => { setVideoUrl(null); setFile(null); setTrack(null); setStatus({ kind: "idle" }); }}>
-            เปลี่ยนวิดีโอ
-          </button>
-        )}
-        <p className="text-xs text-zinc-500">
+        <details className="group rounded-lg border border-zinc-200 dark:border-zinc-800">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between px-3 font-medium">
+            รูปแบบเส้น
+            <span className="text-zinc-500 transition group-open:rotate-180">▾</span>
+          </summary>
+          <fieldset className="flex flex-col gap-3 px-3 pb-3" disabled={!track}>
+            <label className="flex items-center justify-between gap-3">
+              หางลูก {style.trailFrames} เฟรม
+              <input type="range" min={0} max={60} value={style.trailFrames} className="w-32" onChange={(e) => setStyle({ ...style, trailFrames: +e.target.value })} />
+            </label>
+            <label className="flex min-h-8 items-center gap-2">
+              <input type="checkbox" className="h-5 w-5" checked={style.showShotPath} onChange={(e) => setStyle({ ...style, showShotPath: e.target.checked })} />
+              เส้นวิถีทั้งช็อต
+            </label>
+            <label className="flex min-h-8 items-center gap-2">
+              <input type="checkbox" className="h-5 w-5" checked={style.showMarkers} onChange={(e) => setStyle({ ...style, showMarkers: e.target.checked })} />
+              จุดตี / จุดสูงสุด / จุดตก
+            </label>
+          </fieldset>
+        </details>
+        </>)}
+
+        <p className="hidden text-xs text-zinc-500 md:block">
           ตอนนี้ใช้ตัวจับการเคลื่อนไหวแบบง่ายเป็นตัวชั่วคราว จะเปลี่ยนเป็น model TrackNet หลังผ่านเฟส 0
         </p>
       </aside>
@@ -188,9 +200,9 @@ export function Studio() {
 
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-lg border border-zinc-200 p-2 dark:border-zinc-800">
-      <div className="text-xs text-zinc-500">{label}</div>
-      <div className="text-lg font-semibold">{value}</div>
+    <div className="rounded-lg border border-zinc-200 px-2 py-1.5 dark:border-zinc-800 md:p-2">
+      <div className="truncate text-[11px] text-zinc-500 md:text-xs">{label}</div>
+      <div className="text-base font-semibold md:text-lg">{value}</div>
     </div>
   );
 }
