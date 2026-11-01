@@ -72,13 +72,15 @@ function getSession(progress: Progress, safe: boolean) {
     // Multithreaded WASM needs cross-origin isolation (COOP/COEP headers in next.config).
     // Safe mode (a retry after a stall) and phones use fewer threads: shared memory for
     // many threads is what mobile browsers are most likely to refuse.
-    const maxThreads = safe ? 1 : isMobile ? 4 : 8;
-    const threads = self.crossOriginIsolated ? Math.max(1, Math.min(maxThreads, navigator.hardwareConcurrency || 4)) : 1;
-    ort.env.wasm.numThreads = threads;
     type Gpu = { requestAdapter(): Promise<{ features: Set<string> } | null> };
     const gpu = (navigator as Navigator & { gpu?: Gpu }).gpu;
     const adapter = safe || !gpu ? null : await gpu.requestAdapter().catch(() => null);
     const f16 = !!adapter?.features.has("shader-f16");
+    // With WebGPU the CPU threads only add risk: the threaded runtime and the GPU backend
+    // together stalled the first inference. Threads are for the CPU path alone.
+    const maxThreads = safe || adapter ? 1 : isMobile ? 4 : 8;
+    const threads = self.crossOriginIsolated ? Math.max(1, Math.min(maxThreads, navigator.hardwareConcurrency || 4)) : 1;
+    ort.env.wasm.numThreads = threads;
     // fp32 only for a GPU without f16. On CPU fp16 runs as fast and needs half the memory.
     const model = await fetchWithProgress(adapter && !f16 ? MODEL_FP32 : MODEL_FP16, progress);
     const cpu = `CPU ${threads} threads`;
