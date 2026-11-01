@@ -48,6 +48,7 @@ export function applyCourtCalibration(track: Track, corners: Point[], opts: Spee
   const raw: (number | undefined)[] = points.map((p, i) => {
     const a = points[i - span], b = points[i + span];
     if (!p.visible || !a?.visible || !b?.visible) return undefined;
+    for (let k = i - span + 1; k <= i + span; k++) if (points[k]?.breakBefore) return undefined;
     const dt = b.t - a.t;
     if (dt <= 0) return undefined;
     const dpx = Math.hypot((b.x - a.x) * W, (b.y - a.y) * Hpx);

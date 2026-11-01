@@ -17,6 +17,8 @@ export interface TrackPoint {
   confidence: number;
   /** True when the point was filled in across a short gap rather than detected. */
   interpolated: boolean;
+  /** The trajectory does not connect to the previous visible point (the tracker switched objects). */
+  breakBefore?: boolean;
   /** Court coordinates in metres, present once a calibration is applied. */
   courtX?: number;
   courtY?: number;

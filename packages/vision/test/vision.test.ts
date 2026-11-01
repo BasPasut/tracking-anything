@@ -163,3 +163,24 @@ describe('hudState', () => {
     expect(after.rallyTime).toBeCloseTo(4.9);
   });
 });
+
+describe('tracker switching objects', () => {
+  it('does not draw a jump from a false lock to the shuttle', async () => {
+    const { ShuttleTracker, interpolateGaps } = await import('../src');
+    const tr = new ShuttleTracker();
+    // A still false positive at (0.2, 0.2) from frame 0; the shuttle flies from frame 10.
+    for (let f = 0; f < 40; f++) {
+      const c = [{ x: 0.2, y: 0.2, confidence: 0.9 }];
+      if (f >= 10) c.push({ x: 0.9 - (f - 10) * 0.02, y: 0.7, confidence: 0.8 });
+      tr.push(f, f / 30, c);
+    }
+    const pts = interpolateGaps(tr.points);
+    let last: (typeof pts)[number] | undefined;
+    for (const p of pts) {
+      if (!p.visible) continue;
+      if (last && !p.breakBefore) expect(Math.hypot(p.x - last.x, p.y - last.y)).toBeLessThan(0.1);
+      last = p;
+    }
+    expect(pts[30].visible && pts[30].y).toBeCloseTo(0.7, 2);
+  });
+});

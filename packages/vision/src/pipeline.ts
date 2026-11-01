@@ -1,5 +1,5 @@
 import type { Detector, FrameInput } from './detector';
-import { interpolateGaps, ShuttleTracker, type TrackerOptions } from './tracker';
+import { interpolateGaps, removeSpikes, ShuttleTracker, type TrackerOptions } from './tracker';
 import { segment, type SegmentOptions } from './segment';
 import type { Track } from './types';
 import { isSequenceDetector, type SequenceDetector } from './tracknet';
@@ -88,7 +88,7 @@ async function runSequences(
 }
 
 function finish(tracker: ShuttleTracker, o: PipelineOptions, detectorId: string): Track {
-  const points = interpolateGaps(tracker.points, o.maxInterpolateGap ?? 6);
+  const points = interpolateGaps(removeSpikes(tracker.points, o.width, o.height), o.maxInterpolateGap ?? 6);
   return {
     schemaVersion: 1,
     sport: o.sport ?? 'badminton',
