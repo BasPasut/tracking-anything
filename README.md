@@ -48,7 +48,10 @@ BASE_URL=http://localhost:3000/ node scripts/e2e-smoke.cjs rally.mp4
 
 ## Deploy
 
-**Vercel (internal ช่วงแรก)**: import repo แล้วตั้ง Root Directory เป็น `apps/web` Vercel จะรู้จัก pnpm workspace เอง
+**Vercel (internal ช่วงแรก)**: import repo โดยปล่อย Root Directory เป็น root ของ repo
+`vercel.json` ใช้ Vercel Services และประกาศ service เดียวคือ `web` (Next.js ใน `apps/web`) ที่รับทุก path
+เมื่อมี backend เพิ่ม (เช่น GPU worker ในเฟส 3) ให้เพิ่มเป็น service ใหม่ใน `services` แบบ internal
+แล้วให้ `web` เรียกผ่าน binding แทนการ hardcode URL ทดสอบทุก service พร้อมกันในเครื่องด้วย `vercel dev`
 แนะนำเปิด Deployment Protection หรือ Vercel Authentication ไว้จนกว่าจะมี login ของแอปเอง
 
 **Container (AWS หรือที่อื่น)**: `docker build -t tracking-anything-web .` แล้วรันบน ECS Fargate / App Runner
