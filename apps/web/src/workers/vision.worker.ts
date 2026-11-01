@@ -45,8 +45,17 @@ function getSession() {
     // Served from public/ort (copied there by scripts/copy-ort.mjs).
     ort.env.wasm.wasmPaths = `${self.location.origin}/ort/`;
     const model = await fetchWithProgress(MODEL_URL);
-    const hasGpu = "gpu" in navigator && !!(await (navigator as Navigator & { gpu: { requestAdapter(): Promise<unknown> } }).gpu.requestAdapter().catch(() => null));
-    return ort.InferenceSession.create(model, { executionProviders: hasGpu ? ["webgpu", "wasm"] : ["wasm"] });
+    // The model is fp16, so WebGPU is used only when the GPU supports f16 shaders.
+    type Gpu = { requestAdapter(): Promise<{ features: Set<string> } | null> };
+    const gpu = (navigator as Navigator & { gpu?: Gpu }).gpu;
+    const adapter = gpu ? await gpu.requestAdapter().catch(() => null) : null;
+    const useGpu = !!adapter?.features.has("shader-f16");
+    try {
+      return await ort.InferenceSession.create(model, { executionProviders: useGpu ? ["webgpu"] : ["wasm"] });
+    } catch (err) {
+      if (!useGpu) throw err;
+      return ort.InferenceSession.create(model, { executionProviders: ["wasm"] });
+    }
   })().catch((err) => { session = null; throw err; });
   return session;
 }
