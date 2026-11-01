@@ -8,6 +8,12 @@ import {
 import type { DetectorKind, WorkerRequest, WorkerResponse } from "@/lib/worker-protocol";
 import { CameraCapture } from "@/components/camera-capture";
 
+/** Set once this browser's GPU has failed the check against the CPU; later runs skip the GPU. */
+const NO_GPU_KEY = "shuttle-tracker.no-gpu";
+function gpuDistrusted() {
+  try { return !!localStorage.getItem(NO_GPU_KEY); } catch { return false; }
+}
+
 type Status =
   | { kind: "idle" }
   | { kind: "busy"; stage: "load" | "background" | "analyze" | "export"; value: number }
@@ -80,6 +86,16 @@ export function Studio() {
           if (!e || e.stage !== m.stage) { etaRef.current = { stage: m.stage, t0: now, v0: m.value }; setEta(null); }
           else if ((m.stage === "analyze" || m.stage === "export") && m.value - e.v0 > 0.02 && now - e.t0 > 1500) setEta(((now - e.t0) / (m.value - e.v0)) * (1 - m.value) / 1000);
         }
+        else if (m.type === "gpuMismatch") {
+          // This GPU gets the model wrong: remember that, and redo the clip on the CPU.
+          try { localStorage.setItem(NO_GPU_KEY, m.detail); } catch {}
+          w.terminate();
+          workerRef.current = null;
+          if (p?.req.type === "analyze") {
+            setNotice("GPU ของเครื่องนี้ให้ผลไม่ตรงกับ CPU เลยเปลี่ยนไปประมวลผลด้วย CPU แทน (ช้ากว่าแต่แม่นกว่า)");
+            send({ ...p.req, noGpu: true });
+          }
+        }
         else if (m.type === "info") setBackend(m.backend);
         else if (m.type === "analyzed") {
           etaRef.current = null; setEta(null); setTrack(m.track); setElapsed(m.elapsedSec); setStatus({ kind: "ready" }); }
@@ -148,7 +164,7 @@ export function Studio() {
     setNotice(null);
     setTrack(null);
     setStatus({ kind: "busy", stage: "analyze", value: 0 });
-    send({ type: "analyze", file: f, detector });
+    send({ type: "analyze", file: f, detector, noGpu: gpuDistrusted() });
   };
 
   const reanalyze = (kind: DetectorKind) => {
@@ -157,7 +173,7 @@ export function Studio() {
     setTrack(null);
     setElapsed(null);
     setStatus({ kind: "busy", stage: "analyze", value: 0 });
-    send({ type: "analyze", file, detector: kind });
+    send({ type: "analyze", file, detector: kind, noGpu: gpuDistrusted() });
   };
 
   // The court calibration is cheap to apply, so it runs on the client whenever corners change.

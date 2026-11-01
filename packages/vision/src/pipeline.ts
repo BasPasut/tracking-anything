@@ -72,6 +72,9 @@ async function runSequences(
       items.forEach((b, i) => tracker.push(start + i, b.t, out[i] ?? []));
       onProgress?.(items[items.length - 1].t);
     })();
+    // A failed run is rethrown by the next flush or the final await; until then it
+    // must not count as an unhandled rejection.
+    pending.catch(() => {});
     return prev;
   };
   for await (const f of source.frames()) {
