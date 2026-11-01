@@ -56,6 +56,8 @@ export interface Track {
   rallies: Rally[];
   /** How much the picture differs from the estimated still background (0..255, median over samples). High means the camera moved. */
   cameraMotion?: number;
+  /** Share of the clip (0..1) skipped because the picture matched no background: the camera was moving. */
+  cameraMovingFraction?: number;
   /** Court corners the user tapped, normalized image coordinates. */
   calibration?: { court: string; corners: { x: number; y: number }[] };
 }

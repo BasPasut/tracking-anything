@@ -3,7 +3,7 @@ import {
   ALL_FORMATS, BlobSource, BufferTarget, CanvasSink, Conversion, Input, Mp4OutputFormat, Output,
 } from "mediabunny";
 import {
-  cameraMotionScore, medianBackground, MotionDetector, renderOverlay, runPipeline, TrackNetDetector,
+  frameDifference, medianBackground, MotionDetector, renderOverlay, runPipeline, TrackNetDetector,
   TRACKNET_HEIGHT, TRACKNET_WIDTH, type FrameInput,
 } from "@app/vision";
 import * as ort from "onnxruntime-web/webgpu";
@@ -17,8 +17,13 @@ const ANALYZE_WIDTH = 640;
 /** fp16 halves the download and is what the CPU runs; the GPU runs fp32, since half precision on some GPUs drifted far from the CPU's output. */
 const MODEL_FP16 = "/models/tracknetv3-fp16.onnx";
 const MODEL_FP32 = "/models/tracknetv3-fp32.onnx";
-/** Frames sampled across the clip to estimate the empty-court background. */
+/** Frames sampled to estimate the empty-court background of a short clip. */
 const BACKGROUND_SAMPLES = 32;
+/** Longer clips get one background per stretch of this many seconds, from this many frames each. */
+const BACKGROUND_WINDOW_SEC = 4;
+const BACKGROUND_SAMPLES_PER_WINDOW = 12;
+/** Sequences further than this from every background are skipped (camera moving). See TrackNetDetectorOptions. */
+const MAX_BACKGROUND_DIFFERENCE = 16;
 
 type Stage = "load" | "background" | "analyze";
 
@@ -144,19 +149,40 @@ async function runModel(sess: ort.InferenceSession, input: Float32Array) {
 async function makeTrackNet(video: Awaited<ReturnType<Input["getPrimaryVideoTrack"]>> & object, duration: number, progress: Progress, safe: boolean, noGpu: boolean) {
   const s = await getSession(progress, safe, noGpu);
   post({ type: "info", backend: s.backend });
-  // Background: median of frames spread evenly over the clip.
+  // Backgrounds: one median per stretch of BACKGROUND_WINDOW_SEC, so a camera that moves
+  // between still stretches gets a matching background for each.
   const sink = new CanvasSink(video, { width: TRACKNET_WIDTH, height: TRACKNET_HEIGHT, fit: "fill" });
   const start = await video.getFirstTimestamp();
-  const times = Array.from({ length: BACKGROUND_SAMPLES }, (_, i) => start + ((i + 0.5) / BACKGROUND_SAMPLES) * (duration - start));
-  const frames: FrameInput[] = [];
+  const span = Math.max(0.001, duration - start);
+  const windows = Math.max(1, Math.round(span / BACKGROUND_WINDOW_SEC));
+  const perWindow = windows === 1 ? BACKGROUND_SAMPLES : BACKGROUND_SAMPLES_PER_WINDOW;
+  const total = windows * perWindow;
+  const times = Array.from({ length: total }, (_, i) => start + ((i + 0.5) / total) * span);
+  const backgrounds: FrameInput[] = [];
+  const bgDiffs: number[] = [];
+  let group: FrameInput[] = [];
+  let seen = 0;
+  const close = () => {
+    if (!group.length) return;
+    const bg = medianBackground(group);
+    backgrounds.push(bg);
+    for (const f of group) bgDiffs.push(frameDifference(f, bg));
+    group = [];
+  };
   for await (const c of sink.canvasesAtTimestamps(times)) {
-    if (!c) continue;
-    const ctx = (c.canvas as OffscreenCanvas).getContext("2d", { willReadFrequently: true })!;
-    frames.push({ data: ctx.getImageData(0, 0, TRACKNET_WIDTH, TRACKNET_HEIGHT).data, width: TRACKNET_WIDTH, height: TRACKNET_HEIGHT });
-    progress("background", frames.length / BACKGROUND_SAMPLES);
+    seen++;
+    if (c) {
+      const ctx = (c.canvas as OffscreenCanvas).getContext("2d", { willReadFrequently: true })!;
+      group.push({ data: ctx.getImageData(0, 0, TRACKNET_WIDTH, TRACKNET_HEIGHT).data, width: TRACKNET_WIDTH, height: TRACKNET_HEIGHT });
+    }
+    if (seen % perWindow === 0) close();
+    progress("background", seen / total);
   }
-  const background = medianBackground(frames);
-  cameraMotion = cameraMotionScore(frames, background);
+  close();
+  if (!backgrounds.length) throw new Error("อ่านเฟรมจากวิดีโอไม่ได้");
+  // How far frames sit from their own stretch's background: low for a tripod.
+  bgDiffs.sort((a, b) => a - b);
+  cameraMotion = bgDiffs[bgDiffs.length >> 1];
   // Some GPUs return heatmaps that miss the shuttle. Until the CPU copy has seen a
   // shuttle (or GPU_CHECKS runs passed), run both and compare; on a mismatch move on
   // to the next GPU set-up, and give up on the GPU when none is left.
@@ -196,7 +222,7 @@ async function makeTrackNet(video: Awaited<ReturnType<Input["getPrimaryVideoTrac
       data = await runModel(s.sess, input);
     }
   };
-  return new TrackNetDetector(run, background);
+  return new TrackNetDetector(run, backgrounds, { maxBackgroundDifference: MAX_BACKGROUND_DIFFERENCE, maxStillHits: 6 });
 }
 
 async function analyze(file: File, kind: DetectorKind, safe: boolean, noGpu: boolean) {
@@ -239,6 +265,7 @@ async function analyze(file: File, kind: DetectorKind, safe: boolean, noGpu: boo
     onProgress: (t) => progress("analyze", duration ? t / duration : 0),
   });
   if (cameraMotion !== undefined) track.cameraMotion = cameraMotion;
+  if (detector instanceof TrackNetDetector && detector.sequences) track.cameraMovingFraction = detector.skipped / detector.sequences;
   post({ type: "analyzed", track, elapsedSec: (performance.now() - started) / 1000 });
 }
 
