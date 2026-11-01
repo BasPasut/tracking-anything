@@ -124,3 +124,22 @@ describe('motion detector shape filter', () => {
     expect(found[0].y).toBeCloseTo(11.5 / H, 2);
   });
 });
+
+describe('renderOverlay', () => {
+  it('draws only the most recent shots of a long rally', async () => {
+    const { renderOverlay, defaultStyle } = await import('../src');
+    const pts: TrackPoint[] = rallyPath().map((p, i) => ({ frame: i, t: i / fps, ...p, visible: true, confidence: 1, interpolated: false }));
+    const track = {
+      schemaVersion: 1 as const, sport: 'badminton', fps, width: 100, height: 100, detector: 'test', points: pts,
+      rallies: [{ index: 0, startFrame: 0, endFrame: 79, shots: [0, 1, 2, 3].map((k) => ({ index: k, startIdx: k * 20, endIdx: k * 20 + 19, startFrame: k * 20, endFrame: k * 20 + 19, apexIdx: k * 20 })) }],
+    };
+    const moves: number[][] = [];
+    const ctx = new Proxy({}, {
+      get: (_t, prop) => prop === 'moveTo' ? (x: number, y: number) => moves.push([x, y]) : () => {},
+      set: () => true,
+    }) as unknown as CanvasRenderingContext2D;
+    renderOverlay(ctx, track, 79 / fps, 100, 100, { ...defaultStyle, trailFrames: 0, showMarkers: false, recentShots: 2 });
+    // Shot paths start at their first point: only shots 2 and 3 should be drawn.
+    expect(moves.map(([x]) => Math.round(x))).toEqual([Math.round(pts[40].x * 100), Math.round(pts[60].x * 100)]);
+  });
+});
