@@ -64,3 +64,20 @@ describe('sequence pipeline', () => {
     expect(last.x * W).toBeCloseTo(100 + last.frame * 6 + 0.5, 0);
   });
 });
+
+describe('court calibration and speed', () => {
+  it('measures a shuttle crossing the court at a known speed', async () => {
+    const { applyCourtCalibration, segment } = await import('../src');
+    // Image corners = a top-down view of the court filling the frame.
+    const corners = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+    const fps = 50, mps = 25; // 25 m/s = 90 km/h along the court length
+    const points = Array.from({ length: 30 }, (_, i) => ({
+      frame: i, t: i / fps, x: 0.5, y: (i / fps) * mps / 13.4, visible: true, confidence: 1, interpolated: false,
+    }));
+    const track = { schemaVersion: 1 as const, sport: 'badminton', fps, width: 610, height: 1340, detector: 't', points, rallies: segment(points, fps) };
+    const out = applyCourtCalibration(track, corners);
+    expect(out.points[10].courtX).toBeCloseTo(3.05);
+    expect(out.points[10].speedKmh).toBeCloseTo(90, 0);
+    expect(out.rallies[0].shots[0].initialSpeedKmh).toBeCloseTo(90, 0);
+  });
+});

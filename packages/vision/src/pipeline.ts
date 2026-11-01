@@ -55,22 +55,33 @@ export async function runPipeline(source: FrameSource, o: PipelineOptions): Prom
 async function runSequences(
   source: FrameSource, det: SequenceDetector, tracker: ShuttleTracker, onProgress?: (t: number) => void,
 ) {
-  let batch: { frame: FrameInput; t: number }[] = [];
+  type Item = { frame: FrameInput; t: number };
+  let batch: Item[] = [];
   let frameNo = 0;
-  const flush = async () => {
+  // Inference for one sequence runs while the next sequence is being decoded.
+  let pending: Promise<void> | null = null;
+  const flush = () => {
     if (!batch.length) return;
-    const out = await det.detectSequence(batch.map((b) => b.frame));
-    batch.forEach((b, i) => tracker.push(frameNo + i, b.t, out[i] ?? []));
-    frameNo += batch.length;
-    onProgress?.(batch[batch.length - 1].t);
+    const items = batch, start = frameNo;
     batch = [];
+    frameNo += items.length;
+    const prev = pending;
+    pending = (async () => {
+      await prev; // one model run at a time, tracker updates in frame order
+      const out = await det.detectSequence(items.map((b) => b.frame));
+      items.forEach((b, i) => tracker.push(start + i, b.t, out[i] ?? []));
+      onProgress?.(items[items.length - 1].t);
+    })();
+    return prev;
   };
   for await (const f of source.frames()) {
     // Frames may reuse one buffer between yields, so keep a copy for the sequence.
     batch.push({ frame: { ...f.frame, data: new Uint8ClampedArray(f.frame.data) }, t: f.t });
+    // At most one sequence waits behind the running one, so memory stays bounded.
     if (batch.length === det.seqLen) await flush();
   }
   await flush();
+  await pending;
 }
 
 function finish(tracker: ShuttleTracker, o: PipelineOptions, detectorId: string): Track {

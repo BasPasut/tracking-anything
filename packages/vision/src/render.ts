@@ -11,6 +11,8 @@ export interface OverlayStyle {
   showMarkers: boolean;
   /** How many shots of the current rally stay drawn (the current one included). Older ones fade out. */
   recentShots: number;
+  /** Show the current shot's speed (needs a court calibration). */
+  showSpeed: boolean;
   /** Line width as a fraction of the frame height. */
   lineWidth: number;
   /** Colours cycled per shot. */
@@ -22,6 +24,7 @@ export const defaultStyle: OverlayStyle = {
   showShotPath: true,
   showMarkers: true,
   recentShots: 2,
+  showSpeed: true,
   lineWidth: 0.006,
   palette: ['#ffd60a', '#00e5ff', '#ff4d6d', '#7cff6b', '#c77dff'],
 };
@@ -61,10 +64,15 @@ export function renderOverlay(ctx: Ctx, track: Track, t: number, w: number, h: n
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
+  let speedLabel: { text: string; colour: string } | null = null;
   const rally = track.rallies.find((r) => pts[now].frame >= r.startFrame && pts[now].frame <= r.endFrame + 1);
   if (rally) {
     let current = 0;
     for (const s of rally.shots) if (s.startIdx <= now) current = s.index;
+    const cur = rally.shots[current];
+    if (cur && style.showSpeed && cur.initialSpeedKmh !== undefined && cur.startIdx <= now) {
+      speedLabel = { text: `SHOT ${current + 1}  ${Math.round(cur.initialSpeedKmh)} km/h`, colour: style.palette[current % style.palette.length] };
+    }
     for (const s of rally.shots) {
       if (s.startIdx > now) break;
       if (s.index <= current - Math.max(1, style.recentShots)) continue;
@@ -106,6 +114,54 @@ export function renderOverlay(ctx: Ctx, track: Track, t: number, w: number, h: n
       marker(ctx, p.x * w, p.y * h, lw * 1.2, '#ffffff', 'dot');
     }
   }
+  if (speedLabel) drawLabel(ctx, speedLabel.text, speedLabel.colour, w, h);
+  ctx.restore();
+}
+
+/** Speed pill in the top-left corner, sized to the frame. */
+function drawLabel(ctx: Ctx, text: string, colour: string, w: number, h: number) {
+  const size = Math.max(14, Math.round(h * 0.045));
+  const pad = size * 0.5, x = Math.round(w * 0.03), y = Math.round(h * 0.04);
+  ctx.globalAlpha = 1;
+  ctx.font = `700 ${size}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(text).width;
+  const bh = size + pad * 1.2;
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.beginPath();
+  ctx.roundRect(x, y, tw + pad * 2 + size * 0.6, bh, bh / 2);
+  ctx.fill();
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.arc(x + pad + size * 0.2, y + bh / 2, size * 0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(text, x + pad + size * 0.6, y + bh / 2);
+}
+
+/** Court outline from tapped corners (normalized), drawn while calibrating and after. */
+export function renderCourt(ctx: Ctx, corners: { x: number; y: number }[], w: number, h: number) {
+  if (!corners.length) return;
+  const r = Math.max(5, h * 0.012);
+  ctx.save();
+  ctx.strokeStyle = '#00e5ff';
+  ctx.fillStyle = '#00e5ff';
+  ctx.lineWidth = Math.max(2, h * 0.004);
+  ctx.setLineDash([r * 1.5, r]);
+  ctx.beginPath();
+  corners.forEach((c, i) => (i ? ctx.lineTo(c.x * w, c.y * h) : ctx.moveTo(c.x * w, c.y * h)));
+  if (corners.length === 4) ctx.closePath();
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = `700 ${Math.round(r * 2.2)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  corners.forEach((c, i) => {
+    ctx.fillStyle = '#00e5ff';
+    ctx.beginPath(); ctx.arc(c.x * w, c.y * h, r * 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.fillText(String(i + 1), c.x * w, c.y * h);
+  });
   ctx.restore();
 }
 

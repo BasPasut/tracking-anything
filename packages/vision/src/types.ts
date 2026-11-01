@@ -20,6 +20,8 @@ export interface TrackPoint {
   /** Court coordinates in metres, present once a calibration is applied. */
   courtX?: number;
   courtY?: number;
+  /** Shuttle speed over the court in km/h, present once a calibration is applied. */
+  speedKmh?: number;
 }
 
 export interface Shot {
@@ -31,6 +33,9 @@ export interface Shot {
   endIdx: number;
   /** Highest point on screen (smallest y) within the shot. */
   apexIdx: number;
+  /** Fastest speed in the shot and speed just after the hit, km/h. Need a court calibration. */
+  peakSpeedKmh?: number;
+  initialSpeedKmh?: number;
 }
 
 export interface Rally {
@@ -49,4 +54,6 @@ export interface Track {
   detector: string;
   points: TrackPoint[];
   rallies: Rally[];
+  /** Court corners the user tapped, normalized image coordinates. */
+  calibration?: { court: string; corners: { x: number; y: number }[] };
 }

@@ -9,6 +9,7 @@ export type WorkerRequest =
 
 export type WorkerResponse =
   | { type: "progress"; stage: "load" | "background" | "analyze" | "export"; value: number }
-  | { type: "analyzed"; track: Track }
+  | { type: "info"; backend: string }
+  | { type: "analyzed"; track: Track; elapsedSec: number }
   | { type: "exported"; buffer: ArrayBuffer; mimeType: string }
   | { type: "error"; message: string };
