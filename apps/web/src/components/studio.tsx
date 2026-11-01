@@ -8,14 +8,33 @@ import {
 import type { DetectorKind, WorkerRequest, WorkerResponse } from "@/lib/worker-protocol";
 import { CameraCapture } from "@/components/camera-capture";
 
+/** Set once this browser's GPU has failed the check against the CPU; later runs skip the GPU. */
+// Versioned: a new set of GPU set-ups to try clears the old verdict.
+const NO_GPU_KEY = "shuttle-tracker.no-gpu.v2";
+function gpuDistrusted() {
+  try { return !!localStorage.getItem(NO_GPU_KEY); } catch { return false; }
+}
+
 type Status =
   | { kind: "idle" }
   | { kind: "busy"; stage: "load" | "background" | "analyze" | "export"; value: number }
   | { kind: "ready" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; reload?: boolean };
 
 /** Wall clock for the stall watchdog (kept outside the component: it is only read in handlers). */
 const clock = () => performance.now();
+
+/**
+ * Download name: the source video's name, a suffix for what the file is, and the local
+ * date and time, e.g. "rally_tracked_20261101-153012.mp4".
+ */
+function outputName(source: string | undefined, suffix: string, ext: string) {
+  const base = (source ?? "").replace(/\.[^.]*$/, "").replace(/[\\/:*?"<>|]+/g, "_").trim() || "shuttle";
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  return `${base}_${suffix}_${stamp}.${ext}`;
+}
 
 function download(data: BlobPart, name: string, type: string) {
   const url = URL.createObjectURL(new Blob([data], { type }));
@@ -28,6 +47,8 @@ function download(data: BlobPart, name: string, type: string) {
 
 export function Studio() {
   const [file, setFile] = useState<File | null>(null);
+  /** The source name for the worker's handlers, which outlive the render they were made in. */
+  const fileNameRef = useRef<string | undefined>(undefined);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [track, setTrack] = useState<Track | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
@@ -42,18 +63,29 @@ export function Studio() {
   const etaRef = useRef<{ stage: string; t0: number; v0: number } | null>(null);
   const [eta, setEta] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workerRef = useRef<Worker | null>(null);
   /** The request in flight and when the worker last said anything, for the stall watchdog. */
   const pendingRef = useRef<{ req: WorkerRequest; lastMsg: number; heard: boolean } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const lastStageRef = useRef("start");
 
   // Plain functions: they only touch refs and state setters, so the copies bound to the
   // worker's handlers stay valid across renders.
   function getWorker() {
     if (!workerRef.current) {
       const w = new Worker(new URL("../workers/vision.worker.ts", import.meta.url), { type: "module" });
-      w.onerror = (e) => { e.preventDefault(); fail(`โหลดตัวประมวลผลไม่ได้${e.message ? `: ${e.message}` : ""}`); };
+      w.onerror = (e) => {
+        e.preventDefault();
+        // An error before the worker said anything usually means its script is gone:
+        // this tab was loaded from an older deploy. Retrying can't help; a reload can.
+        // The detail line is for bug reports: what failed, where, and how far it got.
+        const where = e.filename ? ` @ ${e.filename.split("/").pop()}:${e.lineno}` : "";
+        const detail = ` (รายละเอียด: ${e.message || "no message"}${where}; ขั้นตอนล่าสุด ${lastStageRef.current})`;
+        if (!pendingRef.current?.heard) return fail(`โหลดตัวประมวลผลไม่ได้ อาจเป็นเพราะเว็บเพิ่งอัปเดต${detail}`, true);
+        fail(`ตัวประมวลผลขัดข้อง${detail}`);
+      };
       w.onmessageerror = () => fail("รับข้อมูลจากตัวประมวลผลไม่ได้");
       w.onmessage = (e: MessageEvent<WorkerResponse>) => {
         const m = e.data;
@@ -61,6 +93,7 @@ export function Studio() {
         if (p) { p.lastMsg = performance.now(); p.heard = true; }
         if (m.type === "analyzed" || m.type === "exported" || m.type === "error") pendingRef.current = null;
         if (m.type === "progress") {
+          lastStageRef.current = `${m.stage} ${Math.round(m.value * 100)}%`;
           setStatus({ kind: "busy", stage: m.stage, value: m.value });
           // Estimate time left from the rate of the current stage: the model download
           // and the analysis run at very different speeds, so each stage restarts the clock.
@@ -68,10 +101,20 @@ export function Studio() {
           if (!e || e.stage !== m.stage) { etaRef.current = { stage: m.stage, t0: now, v0: m.value }; setEta(null); }
           else if ((m.stage === "analyze" || m.stage === "export") && m.value - e.v0 > 0.02 && now - e.t0 > 1500) setEta(((now - e.t0) / (m.value - e.v0)) * (1 - m.value) / 1000);
         }
+        else if (m.type === "gpuMismatch") {
+          // This GPU gets the model wrong: remember that, and redo the clip on the CPU.
+          try { localStorage.setItem(NO_GPU_KEY, m.detail); } catch {}
+          w.terminate();
+          workerRef.current = null;
+          if (p?.req.type === "analyze") {
+            setNotice(`GPU ของเครื่องนี้ให้ผลไม่ตรงกับ CPU เลยเปลี่ยนไปประมวลผลด้วย CPU แทน (ช้ากว่าแต่แม่นกว่า) [${m.detail}]`);
+            send({ ...p.req, noGpu: true });
+          }
+        }
         else if (m.type === "info") setBackend(m.backend);
         else if (m.type === "analyzed") {
           etaRef.current = null; setEta(null); setTrack(m.track); setElapsed(m.elapsedSec); setStatus({ kind: "ready" }); }
-        else if (m.type === "exported") { etaRef.current = null; setEta(null); download(m.buffer, "shuttle-tracked.mp4", m.mimeType); setStatus({ kind: "ready" }); }
+        else if (m.type === "exported") { etaRef.current = null; setEta(null); download(m.buffer, outputName(fileNameRef.current, "tracked", "mp4"), m.mimeType); setStatus({ kind: "ready" }); }
         else setStatus({ kind: "error", message: m.message });
       };
       workerRef.current = w;
@@ -82,6 +125,7 @@ export function Studio() {
   useEffect(() => () => workerRef.current?.terminate(), []);
 
   function send(req: WorkerRequest) {
+    lastStageRef.current = "start";
     pendingRef.current = { req, lastMsg: clock(), heard: false };
     getWorker().postMessage(req);
   }
@@ -89,13 +133,17 @@ export function Studio() {
   // A worker that crashed or hung (a phone browser killing it for memory, say) sends
   // nothing. Restart it once in safe mode (one CPU thread, small model), then give up
   // with an error instead of a progress bar that never moves.
-  function fail(reason: string) {
+  function fail(reason: string, stale = false) {
     const p = pendingRef.current;
     pendingRef.current = null;
     workerRef.current?.terminate();
     workerRef.current = null;
     etaRef.current = null;
     setEta(null);
+    if (stale) {
+      setStatus({ kind: "error", message: `${reason} กรุณารีเฟรชหน้าแล้วลองใหม่`, reload: true });
+      return;
+    }
     if (p && p.req.type === "analyze" && p.req.detector === "tracknet" && !p.req.safe) {
       setNotice("ประมวลผลแบบปกติไม่สำเร็จ กำลังลองใหม่แบบประหยัดหน่วยความจำ (ช้ากว่า)");
       setStatus({ kind: "busy", stage: "load", value: 0 });
@@ -124,6 +172,7 @@ export function Studio() {
     setCameraOpen(false);
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setFile(f);
+    fileNameRef.current = f.name;
     setVideoUrl(URL.createObjectURL(f));
     setCorners([]);
     setCalibrating(false);
@@ -131,7 +180,7 @@ export function Studio() {
     setNotice(null);
     setTrack(null);
     setStatus({ kind: "busy", stage: "analyze", value: 0 });
-    send({ type: "analyze", file: f, detector });
+    send({ type: "analyze", file: f, detector, noGpu: gpuDistrusted() });
   };
 
   const reanalyze = (kind: DetectorKind) => {
@@ -140,7 +189,7 @@ export function Studio() {
     setTrack(null);
     setElapsed(null);
     setStatus({ kind: "busy", stage: "analyze", value: 0 });
-    send({ type: "analyze", file, detector: kind });
+    send({ type: "analyze", file, detector: kind, noGpu: gpuDistrusted() });
   };
 
   // The court calibration is cheap to apply, so it runs on the client whenever corners change.
@@ -207,16 +256,25 @@ export function Studio() {
           <CameraCapture onRecorded={onFile} onCancel={() => setCameraOpen(false)} />
         ) : !videoUrl ? (
           <div className="flex flex-col gap-3">
-            <label
-              className="media-frame flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:border-zinc-500 dark:border-zinc-700"
+            {/* One file input for both the drop zone and the button, so phones (no drag and drop) get a clear button. */}
+            <input ref={fileRef} type="file" accept="video/*" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
+            <div
+              role="button"
+              tabIndex={0}
+              className="media-frame flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 px-4 text-center text-zinc-500 hover:border-zinc-500 dark:border-zinc-700"
+              onClick={() => fileRef.current?.click()}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") fileRef.current?.click(); }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => { e.preventDefault(); onFile(e.dataTransfer.files[0]); }}
             >
-              <span className="text-lg font-medium">ลากไฟล์วิดีโอมาวาง หรือคลิกเพื่อเลือก</span>
+              <span className="text-lg font-medium [@media(pointer:coarse)]:hidden">ลากไฟล์วิดีโอมาวาง หรือกดปุ่มด้านล่าง</span>
+              <span className="hidden text-lg font-medium [@media(pointer:coarse)]:inline">แตะเพื่อเลือกวิดีโอจากเครื่อง</span>
               <span className="text-sm">MP4 / MOV / WebM · กล้องตั้งนิ่ง 60 fps ขึ้นไปจะแม่นที่สุด</span>
-              <input type="file" accept="video/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
-            </label>
-            <button className="btn self-start" onClick={() => setCameraOpen(true)}>ถ่ายจากกล้องแทน</button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button className="btn" onClick={() => fileRef.current?.click()}>อัปโหลดวิดีโอ</button>
+              <button className="btn btn-quiet" onClick={() => setCameraOpen(true)}>ถ่ายจากกล้อง</button>
+            </div>
           </div>
         ) : (
           // Shrink-wrap the video so the overlay canvas covers exactly the picture, with no letterbox.
@@ -240,7 +298,14 @@ export function Studio() {
           </div>
         )}
         {notice && status.kind === "busy" && <p className="text-sm text-amber-600">{notice}</p>}
-        {status.kind === "error" && <p className="text-sm text-red-600">เกิดข้อผิดพลาด: {status.message}</p>}
+        {status.kind === "error" && (
+          <div className="flex flex-wrap items-center gap-2 text-sm text-red-600">
+            <p>เกิดข้อผิดพลาด: {status.message}</p>
+            {status.reload && (
+              <button type="button" className="btn" onClick={() => location.reload()}>รีเฟรชหน้า</button>
+            )}
+          </div>
+        )}
       </section>
 
       <aside className="studio-panel flex flex-col gap-3 text-sm md:gap-5">
@@ -302,9 +367,9 @@ export function Studio() {
           </div>
         )}
 
-        {track?.cameraMotion !== undefined && track.cameraMotion > CAMERA_MOTION_WARN && (
+        {track?.cameraMovingFraction !== undefined && track.cameraMovingFraction > CAMERA_MOVING_WARN && (
           <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
-            กล้องขยับระหว่างคลิปนี้ TrackNetV3 ต้องใช้กล้องตั้งนิ่ง (ขาตั้ง) ผลจับลูกจึงคลาดเคลื่อน การรองรับคลิปถือถ่ายอยู่ในเฟสถัดไป
+            กล้องขยับราว {Math.round(track.cameraMovingFraction * 100)}% ของคลิปนี้ ช่วงนั้นจะไม่จับลูก เพราะ TrackNetV3 ต้องใช้กล้องนิ่ง (ขาตั้ง) ช่วงที่กล้องนิ่งยังจับได้ตามปกติ
           </p>
         )}
 
@@ -319,10 +384,10 @@ export function Studio() {
           <button className="btn text-center md:text-left" disabled={!track || busy} onClick={() => file && track && send({ type: "export", file, track: shown ?? track, style })}>
             <span className="md:hidden">MP4</span><span className="hidden md:inline">Export วิดีโอ MP4 พร้อมเส้น</span>
           </button>
-          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToCsv(shown ?? track), "shuttle-track.csv", "text/csv")}>
+          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToCsv(shown ?? track), outputName(file?.name, "track", "csv"), "text/csv")}>
             CSV<span className="hidden md:inline">&nbsp;ข้อมูลรายเฟรม</span>
           </button>
-          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToJson(shown ?? track), "shuttle-track.json", "application/json")}>
+          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToJson(shown ?? track), outputName(file?.name, "track", "json"), "application/json")}>
             JSON
           </button>
         </div>
@@ -375,8 +440,8 @@ function formatDuration(sec: number) {
   return s ? `${m} นาที ${s} วินาที` : `${m} นาที`;
 }
 
-/** Above this cameraMotion score the clip is treated as handheld. Tripod clips measured 1-5, handheld 28-36. */
-const CAMERA_MOTION_WARN = 18;
+/** Warn when more than this share of the clip was skipped for a moving camera. */
+const CAMERA_MOVING_WARN = 0.1;
 
 const STAGE_LABEL = {
   load: "กำลังโหลด model",

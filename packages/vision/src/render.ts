@@ -51,7 +51,7 @@ function strokeRun(ctx: Ctx, pts: TrackPoint[], from: number, to: number, w: num
   for (let i = from; i <= to; i++) {
     const p = pts[i];
     if (!p.visible) { open = false; continue; }
-    if (!open) { ctx.moveTo(p.x * w, p.y * h); open = true; } else ctx.lineTo(p.x * w, p.y * h);
+    if (!open || p.breakBefore) { ctx.moveTo(p.x * w, p.y * h); open = true; } else ctx.lineTo(p.x * w, p.y * h);
   }
   ctx.stroke();
 }
@@ -100,7 +100,7 @@ export function renderOverlay(ctx: Ctx, track: Track, t: number, w: number, h: n
     const from = Math.max(0, now - style.trailFrames);
     for (let i = from + 1; i <= now; i++) {
       const a = pts[i - 1], b = pts[i];
-      if (!a.visible || !b.visible) continue;
+      if (!a.visible || !b.visible || b.breakBefore) continue;
       const f = (i - from) / (now - from + 1);
       ctx.globalAlpha = f;
       ctx.strokeStyle = '#ffffff';

@@ -4,8 +4,10 @@ import type { Detection } from './types';
 /**
  * TrackNetV3 (github.com/qaz812345/TrackNetV3, MIT). The model takes a median background
  * image plus 8 consecutive frames, all RGB at 512x288 scaled to 0..1 and stacked as 27
- * channels, and returns one heatmap per frame. It needs a static camera, because the
- * background is the median over the whole clip.
+ * channels, and returns one heatmap per frame. It needs a static camera: the original
+ * uses the median over the whole clip as the background. Here a clip can carry several
+ * backgrounds (one per stretch of time), and each sequence uses the one it matches best,
+ * so a camera that moves between still stretches still works.
  */
 export const TRACKNET_WIDTH = 512;
 export const TRACKNET_HEIGHT = 288;
@@ -67,6 +69,19 @@ export function cameraMotionScore(frames: FrameInput[], background: FrameInput):
   return scores.length ? scores[Math.floor(scores.length / 2)] : 0;
 }
 
+/**
+ * Mean absolute RGB difference (0..255) between two frames of one size, sampling every
+ * `step`-th pixel. Cheap enough to run per sequence.
+ */
+export function frameDifference(a: FrameInput, b: FrameInput, step = 7): number {
+  let sum = 0, n = 0;
+  for (let i = 0; i < a.data.length; i += 4 * step) {
+    sum += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
+    n += 3;
+  }
+  return n ? sum / n : 0;
+}
+
 /** Pack background + frames into the 27-channel planar (CHW) tensor TrackNet expects. */
 export function buildTrackNetInput(background: FrameInput, frames: FrameInput[], out?: Float32Array): Float32Array {
   const plane = TRACKNET_WIDTH * TRACKNET_HEIGHT;
@@ -125,25 +140,76 @@ export function heatmapToDetections(
 export interface TrackNetDetectorOptions {
   threshold?: number;
   maxCandidates?: number;
+  /**
+   * Skip a sequence whose frames differ from every background by more than this
+   * (frameDifference, 0..255): the camera is moving and the model would fire on court
+   * lines and the net tape. Still stretches measured 1-12, moving ones 18+.
+   */
+  maxBackgroundDifference?: number;
+  /**
+   * Drop a detection when its spot (a cell of 1/STILL_GRID of the frame) already had a
+   * detection in this many of the last STILL_WINDOW frames. A shuttle in flight never
+   * stays put; a net post, a light or a white mark the model mistakes for one does.
+   */
+  maxStillHits?: number;
 }
+
+const STILL_GRID = 50;
+const STILL_WINDOW = 30;
 
 export class TrackNetDetector implements SequenceDetector {
   readonly id = 'tracknetv3';
   readonly seqLen = TRACKNET_SEQ_LEN;
+  /** Sequences seen, and how many were skipped for a moving camera. */
+  sequences = 0;
+  skipped = 0;
   private buf: Float32Array;
+  private backgrounds: FrameInput[];
+  /** Frame numbers of recent detections per grid cell. */
+  private hits = new Map<number, number[]>();
+  private frameNo = 0;
 
-  constructor(private run: TrackNetRunner, private background: FrameInput, private opts: TrackNetDetectorOptions = {}) {
+  constructor(private run: TrackNetRunner, background: FrameInput | FrameInput[], private opts: TrackNetDetectorOptions = {}) {
+    this.backgrounds = Array.isArray(background) ? background : [background];
+    if (!this.backgrounds.length) throw new Error('TrackNetDetector needs a background');
     this.buf = new Float32Array((TRACKNET_SEQ_LEN + 1) * 3 * TRACKNET_WIDTH * TRACKNET_HEIGHT);
   }
 
   async detectSequence(frames: FrameInput[]): Promise<Detection[][]> {
+    this.sequences++;
+    // The background the middle frame matches best.
+    const mid = frames[frames.length >> 1];
+    let bg = this.backgrounds[0], best = Infinity;
+    if (this.backgrounds.length > 1 || this.opts.maxBackgroundDifference !== undefined) {
+      for (const b of this.backgrounds) {
+        const d = frameDifference(mid, b);
+        if (d < best) { best = d; bg = b; }
+      }
+    }
+    if (best > (this.opts.maxBackgroundDifference ?? Infinity)) {
+      this.skipped++;
+      this.frameNo += frames.length;
+      return frames.map(() => []);
+    }
     // Pad a short final sequence by repeating its last frame; extra outputs are dropped.
     const seq = frames.slice();
     while (seq.length < this.seqLen) seq.push(seq[seq.length - 1]);
-    const heat = await this.run(buildTrackNetInput(this.background, seq, this.buf));
+    const heat = await this.run(buildTrackNetInput(bg, seq, this.buf));
     const plane = TRACKNET_WIDTH * TRACKNET_HEIGHT;
-    return frames.map((_, i) => heatmapToDetections(
+    return frames.map((_, i) => this.dropStill(heatmapToDetections(
       heat, i * plane, TRACKNET_WIDTH, TRACKNET_HEIGHT, this.opts.threshold ?? 0.5, this.opts.maxCandidates ?? 3,
-    ));
+    ), this.frameNo++));
+  }
+
+  private dropStill(dets: Detection[], frame: number): Detection[] {
+    const limit = this.opts.maxStillHits;
+    if (limit === undefined) return dets;
+    return dets.filter((d) => {
+      const cell = Math.min(STILL_GRID - 1, Math.floor(d.y * STILL_GRID)) * STILL_GRID + Math.min(STILL_GRID - 1, Math.floor(d.x * STILL_GRID));
+      const recent = (this.hits.get(cell) ?? []).filter((f) => frame - f < STILL_WINDOW);
+      recent.push(frame);
+      this.hits.set(cell, recent);
+      return recent.length <= limit;
+    });
   }
 }

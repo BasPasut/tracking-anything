@@ -51,6 +51,8 @@ class Hypothesis {
   missed = 0;
   /** Exponential moving average of speed, normalized units per frame. */
   speed = 0;
+  /** Where this hypothesis put the shuttle: index into the tracker's points, position, confidence. */
+  history: { i: number; x: number; y: number; confidence: number }[] = [];
   constructor(q: number, r: number, from: Detection, to: Detection) {
     this.kx = new Kalman1D(q, r);
     this.ky = new Kalman1D(q, r);
@@ -121,6 +123,32 @@ export class ShuttleTracker {
     };
   }
 
+  /**
+   * The challenger was right and the old lock was stuck on something that is not the
+   * shuttle. Rewrite the frames the challenger followed with its positions, and drop
+   * the old lock's slow points just before them, so the trajectory doesn't jump from
+   * the false lock to the shuttle in one frame.
+   */
+  private takeOver(ch: Hypothesis) {
+    const first = ch.history[0]?.i ?? this.points.length;
+    // Frames since the challenger appeared were the old lock's; keep only the challenger's.
+    for (let i = first; i < this.points.length; i++) Object.assign(this.points[i], { x: NaN, y: NaN, visible: false, confidence: 0 });
+    for (const h of ch.history) {
+      const p = this.points[h.i];
+      if (p) Object.assign(p, { x: h.x, y: h.y, visible: true, confidence: h.confidence, interpolated: false, breakBefore: false });
+    }
+    if (this.points[first]) this.points[first].breakBefore = true;
+    // Walk back over the stuck lock: visible points that barely move.
+    let prev: TrackPoint | undefined;
+    for (let i = first - 1, n = 0; i >= 0 && n < 90; i--, n++) {
+      const p = this.points[i];
+      if (!p.visible) continue;
+      if (prev && Math.hypot(p.x - prev.x, p.y - prev.y) > this.o.minFlightSpeed * Math.max(1, prev.frame - p.frame)) break;
+      prev = { ...p };
+      Object.assign(p, { x: NaN, y: NaN, visible: false, confidence: 0 });
+    }
+  }
+
   push(frame: number, t: number, candidates: Detection[]): TrackPoint {
     const { gate, maxMissed, minStartConfidence: minConf, processNoise: q, measurementNoise: r } = this.o;
     let chosen: Detection | undefined;
@@ -143,15 +171,20 @@ export class ShuttleTracker {
       const c = this.challenger.match(free, gate);
       if (c) this.challenger.update(c);
       else if (++this.challenger.missed > 1) this.challenger = null;
+      if (c && this.challenger) this.challenger.history.push({ i: this.points.length, x: this.challenger.kx.pos, y: this.challenger.ky.pos, confidence: c.confidence });
       if (this.challenger && c && this.main && this.challenger.hits >= this.o.switchAfter &&
           this.challenger.speed > this.o.minFlightSpeed && this.challenger.speed > 2 * this.main.speed) {
+        this.takeOver(this.challenger);
         this.main = this.challenger;
         this.challenger = null;
         chosen = c;
       }
     } else if (this.main) {
       const pair = confirmStart(this.prevFree, free, gate, minConf);
-      if (pair) this.challenger = new Hypothesis(q, r, pair[0], pair[1]);
+      if (pair) {
+        this.challenger = new Hypothesis(q, r, pair[0], pair[1]);
+        this.challenger.history.push({ i: this.points.length, x: pair[1].x, y: pair[1].y, confidence: pair[1].confidence });
+      }
     }
     this.prevFree = free;
 
@@ -164,6 +197,23 @@ export class ShuttleTracker {
 }
 
 /**
+ * Drop single-frame spikes: a point far off the line between its two neighbours while
+ * those neighbours sit close together. A shuttle can't leave its path for one frame and
+ * come back; a stray detection can. Distances are in pixels of a w x h frame.
+ */
+export function removeSpikes(points: TrackPoint[], w: number, h: number, minJump = 20): TrackPoint[] {
+  const out = points.map((p) => ({ ...p }));
+  for (let i = 1; i < out.length - 1; i++) {
+    const a = out[i - 1], p = out[i], b = out[i + 1];
+    if (!a.visible || !p.visible || !b.visible || p.breakBefore || b.breakBefore) continue;
+    const off = Math.hypot((p.x - (a.x + b.x) / 2) * w, (p.y - (a.y + b.y) / 2) * h);
+    const step = Math.hypot((b.x - a.x) * w, (b.y - a.y) * h) / 2;
+    if (off > minJump && off > 3 * step) Object.assign(out[i], { x: NaN, y: NaN, visible: false, confidence: 0 });
+  }
+  return out;
+}
+
+/**
  * Fill gaps of up to `maxGap` missing frames between two visible points with linear
  * interpolation (e.g. the shuttle hidden behind a player for a few frames).
  */
@@ -173,7 +223,7 @@ export function interpolateGaps(points: TrackPoint[], maxGap = 6): TrackPoint[] 
   for (let i = 0; i < out.length; i++) {
     if (!out[i].visible) continue;
     const gap = i - last - 1;
-    if (last >= 0 && gap > 0 && gap <= maxGap) {
+    if (last >= 0 && gap > 0 && gap <= maxGap && !out[i].breakBefore) {
       const a = out[last], b = out[i];
       for (let j = last + 1; j < i; j++) {
         const f = (j - last) / (i - last);

@@ -90,3 +90,42 @@ describe('camera motion score', () => {
     expect(cameraMotionScore([solid(160, 8, 8), solid(40, 8, 8), solid(150, 8, 8)], bg)).toBeGreaterThan(40);
   });
 });
+
+describe('several backgrounds', () => {
+  it('uses the background the frames match and skips frames that match none', async () => {
+    const seen: number[] = [];
+    // Fake model: remembers the background brightness it was given.
+    const run = async (x: Float32Array) => { seen.push(Math.round(x[0] * 255)); return new Float32Array(8 * W * H); };
+    const det = new TrackNetDetector(run, [solid(20), solid(200)], { maxBackgroundDifference: 16 });
+    await det.detectSequence(Array.from({ length: 8 }, () => solid(195)));
+    expect(seen).toEqual([200]);
+    const out = await det.detectSequence(Array.from({ length: 8 }, () => solid(110)));
+    expect(out).toHaveLength(8);
+    expect(out.every((d) => d.length === 0)).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect([det.sequences, det.skipped]).toEqual([2, 1]);
+  });
+});
+
+describe('still detections', () => {
+  it('drops a spot that keeps firing but keeps a moving one', async () => {
+    // Fake model: a blob at a fixed spot in every frame, plus one that moves.
+    let call = 0;
+    const run = async () => {
+      const heat = new Float32Array(8 * W * H);
+      for (let i = 0; i < 8; i++) {
+        const f = call * 8 + i;
+        for (const [x, y] of [[100, 100], [20 + f * 10, 200]]) heat[i * W * H + y * W + x] = 0.9;
+      }
+      call++;
+      return heat;
+    };
+    const det = new TrackNetDetector(run, solid(0), { maxStillHits: 10 });
+    const frames = Array.from({ length: 8 }, () => solid(0));
+    const out = [...await det.detectSequence(frames), ...await det.detectSequence(frames)];
+    const still = (d: { y: number }[]) => d.some((p) => Math.abs(p.y - 100.5 / H) < 0.01);
+    expect(out.slice(0, 10).every(still)).toBe(true);
+    expect(out.slice(10).some(still)).toBe(false);
+    expect(out.every((d) => d.some((p) => !still([p])))).toBe(true);
+  });
+});

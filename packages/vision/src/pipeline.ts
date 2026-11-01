@@ -1,5 +1,5 @@
 import type { Detector, FrameInput } from './detector';
-import { interpolateGaps, ShuttleTracker, type TrackerOptions } from './tracker';
+import { interpolateGaps, removeSpikes, ShuttleTracker, type TrackerOptions } from './tracker';
 import { segment, type SegmentOptions } from './segment';
 import type { Track } from './types';
 import { isSequenceDetector, type SequenceDetector } from './tracknet';
@@ -72,6 +72,9 @@ async function runSequences(
       items.forEach((b, i) => tracker.push(start + i, b.t, out[i] ?? []));
       onProgress?.(items[items.length - 1].t);
     })();
+    // A failed run is rethrown by the next flush or the final await; until then it
+    // must not count as an unhandled rejection.
+    pending.catch(() => {});
     return prev;
   };
   for await (const f of source.frames()) {
@@ -85,7 +88,7 @@ async function runSequences(
 }
 
 function finish(tracker: ShuttleTracker, o: PipelineOptions, detectorId: string): Track {
-  const points = interpolateGaps(tracker.points, o.maxInterpolateGap ?? 6);
+  const points = interpolateGaps(removeSpikes(tracker.points, o.width, o.height), o.maxInterpolateGap ?? 6);
   return {
     schemaVersion: 1,
     sport: o.sport ?? 'badminton',
