@@ -7,3 +7,4 @@ export * from './render';
 export * from './export';
 export * from './pipeline';
 export * from './tracknet';
+export * from './speed';
