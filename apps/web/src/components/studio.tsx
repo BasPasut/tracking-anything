@@ -24,6 +24,18 @@ type Status =
 /** Wall clock for the stall watchdog (kept outside the component: it is only read in handlers). */
 const clock = () => performance.now();
 
+/**
+ * Download name: the source video's name, a suffix for what the file is, and the local
+ * date and time, e.g. "rally_tracked_20261101-153012.mp4".
+ */
+function outputName(source: string | undefined, suffix: string, ext: string) {
+  const base = (source ?? "").replace(/\.[^.]*$/, "").replace(/[\\/:*?"<>|]+/g, "_").trim() || "shuttle";
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  return `${base}_${suffix}_${stamp}.${ext}`;
+}
+
 function download(data: BlobPart, name: string, type: string) {
   const url = URL.createObjectURL(new Blob([data], { type }));
   const a = document.createElement("a");
@@ -35,6 +47,8 @@ function download(data: BlobPart, name: string, type: string) {
 
 export function Studio() {
   const [file, setFile] = useState<File | null>(null);
+  /** The source name for the worker's handlers, which outlive the render they were made in. */
+  const fileNameRef = useRef<string | undefined>(undefined);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [track, setTrack] = useState<Track | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
@@ -100,7 +114,7 @@ export function Studio() {
         else if (m.type === "info") setBackend(m.backend);
         else if (m.type === "analyzed") {
           etaRef.current = null; setEta(null); setTrack(m.track); setElapsed(m.elapsedSec); setStatus({ kind: "ready" }); }
-        else if (m.type === "exported") { etaRef.current = null; setEta(null); download(m.buffer, "shuttle-tracked.mp4", m.mimeType); setStatus({ kind: "ready" }); }
+        else if (m.type === "exported") { etaRef.current = null; setEta(null); download(m.buffer, outputName(fileNameRef.current, "tracked", "mp4"), m.mimeType); setStatus({ kind: "ready" }); }
         else setStatus({ kind: "error", message: m.message });
       };
       workerRef.current = w;
@@ -158,6 +172,7 @@ export function Studio() {
     setCameraOpen(false);
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setFile(f);
+    fileNameRef.current = f.name;
     setVideoUrl(URL.createObjectURL(f));
     setCorners([]);
     setCalibrating(false);
@@ -369,10 +384,10 @@ export function Studio() {
           <button className="btn text-center md:text-left" disabled={!track || busy} onClick={() => file && track && send({ type: "export", file, track: shown ?? track, style })}>
             <span className="md:hidden">MP4</span><span className="hidden md:inline">Export วิดีโอ MP4 พร้อมเส้น</span>
           </button>
-          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToCsv(shown ?? track), "shuttle-track.csv", "text/csv")}>
+          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToCsv(shown ?? track), outputName(file?.name, "track", "csv"), "text/csv")}>
             CSV<span className="hidden md:inline">&nbsp;ข้อมูลรายเฟรม</span>
           </button>
-          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToJson(shown ?? track), "shuttle-track.json", "application/json")}>
+          <button className="btn btn-quiet text-center md:text-left" disabled={!track} onClick={() => track && download(trackToJson(shown ?? track), outputName(file?.name, "track", "json"), "application/json")}>
             JSON
           </button>
         </div>
