@@ -120,7 +120,8 @@ export function renderOverlay(ctx: Ctx, track: Track, t: number, w: number, h: n
   const hud = hudState(track, now, t);
   const speed = style.showSpeed ? hud.speedKmh : undefined;
   const hudBottom = style.showHud ? drawHud(ctx, w, h, hud.rallyTime, hud.shotCount, speed) : 0;
-  if (style.showLockOn && pts[now].visible) drawLockOn(ctx, pts[now].x * w, pts[now].y * h, w, h, speed, hudBottom);
+  // Lock on only inside a rally: lone detections outside one are usually false.
+  if (style.showLockOn && hud.live && pts[now].visible) drawLockOn(ctx, pts[now].x * w, pts[now].y * h, w, h, speed, hudBottom);
   ctx.restore();
 }
 

@@ -54,6 +54,8 @@ export interface Track {
   detector: string;
   points: TrackPoint[];
   rallies: Rally[];
+  /** How much the picture differs from the estimated still background (0..255, median over samples). High means the camera moved. */
+  cameraMotion?: number;
   /** Court corners the user tapped, normalized image coordinates. */
   calibration?: { court: string; corners: { x: number; y: number }[] };
 }

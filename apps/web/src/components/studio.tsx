@@ -302,6 +302,12 @@ export function Studio() {
           </div>
         )}
 
+        {track?.cameraMotion !== undefined && track.cameraMotion > CAMERA_MOTION_WARN && (
+          <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+            กล้องขยับระหว่างคลิปนี้ TrackNetV3 ต้องใช้กล้องตั้งนิ่ง (ขาตั้ง) ผลจับลูกจึงคลาดเคลื่อน การรองรับคลิปถือถ่ายอยู่ในเฟสถัดไป
+          </p>
+        )}
+
         {elapsed !== null && track && (
           <p className="text-xs text-zinc-500">
             ใช้เวลา {formatDuration(elapsed)} ({(track.points.length / elapsed).toFixed(1)} เฟรม/วินาที){backend ? ` · ${backend}` : ""}
@@ -368,6 +374,9 @@ function formatDuration(sec: number) {
   const m = Math.floor(sec / 60), s = Math.round(sec % 60);
   return s ? `${m} นาที ${s} วินาที` : `${m} นาที`;
 }
+
+/** Above this cameraMotion score the clip is treated as handheld. Tripod clips measured 1-5, handheld 28-36. */
+const CAMERA_MOTION_WARN = 18;
 
 const STAGE_LABEL = {
   load: "กำลังโหลด model",

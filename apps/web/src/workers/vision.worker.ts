@@ -3,7 +3,7 @@ import {
   ALL_FORMATS, BlobSource, BufferTarget, CanvasSink, Conversion, Input, Mp4OutputFormat, Output,
 } from "mediabunny";
 import {
-  medianBackground, MotionDetector, renderOverlay, runPipeline, TrackNetDetector,
+  cameraMotionScore, medianBackground, MotionDetector, renderOverlay, runPipeline, TrackNetDetector,
   TRACKNET_HEIGHT, TRACKNET_WIDTH, type FrameInput,
 } from "@app/vision";
 import * as ort from "onnxruntime-web/webgpu";
@@ -40,6 +40,9 @@ function makeProgress(weights: Partial<Record<Stage, number>>) {
   };
 }
 type Progress = ReturnType<typeof makeProgress>;
+
+/** Set by the TrackNet setup for the clip being analyzed. */
+let cameraMotion: number | undefined;
 
 let session: Promise<{ sess: ort.InferenceSession; backend: string }> | null = null;
 
@@ -111,6 +114,7 @@ async function makeTrackNet(video: Awaited<ReturnType<Input["getPrimaryVideoTrac
     progress("background", frames.length / BACKGROUND_SAMPLES);
   }
   const background = medianBackground(frames);
+  cameraMotion = cameraMotionScore(frames, background);
   const run = async (input: Float32Array) => {
     const feeds = { [sess.inputNames[0]]: new ort.Tensor("float32", input, [1, 27, TRACKNET_HEIGHT, TRACKNET_WIDTH]) };
     const out = await sess.run(feeds);
@@ -133,6 +137,7 @@ async function analyze(file: File, kind: DetectorKind, safe: boolean) {
   const stats = await video.computePacketStats(100);
   const fps = stats.averagePacketRate || 30;
   const tracknet = kind === "tracknet";
+  cameraMotion = undefined;
   // Rough share of total time per stage; a model already loaded costs nothing.
   const progress = makeProgress({ load: tracknet && !session ? 0.12 : 0, background: tracknet ? 0.05 : 0, analyze: 1 });
   progress("load", 0);
@@ -160,6 +165,7 @@ async function analyze(file: File, kind: DetectorKind, safe: boolean) {
     height: video.displayHeight,
     onProgress: (t) => progress("analyze", duration ? t / duration : 0),
   });
+  if (cameraMotion !== undefined) track.cameraMotion = cameraMotion;
   post({ type: "analyzed", track, elapsedSec: (performance.now() - started) / 1000 });
 }
 

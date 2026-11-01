@@ -50,6 +50,23 @@ export function medianBackground(frames: FrameInput[]): FrameInput {
   return { data: out, width, height };
 }
 
+/**
+ * Median over frames of the mean absolute difference from the background (0..255).
+ * A tripod clip scores a few points; a handheld clip scores 20+, and TrackNet's
+ * background subtraction stops working there.
+ */
+export function cameraMotionScore(frames: FrameInput[], background: FrameInput): number {
+  const scores = frames.map((f) => {
+    let sum = 0, n = 0;
+    for (let i = 0; i < f.data.length; i += 4) {
+      sum += Math.abs(f.data[i] - background.data[i]) + Math.abs(f.data[i + 1] - background.data[i + 1]) + Math.abs(f.data[i + 2] - background.data[i + 2]);
+      n += 3;
+    }
+    return n ? sum / n : 0;
+  }).sort((a, b) => a - b);
+  return scores.length ? scores[Math.floor(scores.length / 2)] : 0;
+}
+
 /** Pack background + frames into the 27-channel planar (CHW) tensor TrackNet expects. */
 export function buildTrackNetInput(background: FrameInput, frames: FrameInput[], out?: Float32Array): Float32Array {
   const plane = TRACKNET_WIDTH * TRACKNET_HEIGHT;
