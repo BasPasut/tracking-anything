@@ -11,8 +11,12 @@ export interface OverlayStyle {
   showMarkers: boolean;
   /** How many shots of the current rally stay drawn (the current one included). Older ones fade out. */
   recentShots: number;
-  /** Show the current shot's speed (needs a court calibration). */
+  /** Show shot speed on the lock-on tag and in the HUD (needs a court calibration). */
   showSpeed: boolean;
+  /** Broadcast-style bar at the top: rally time, shot count, shot speed. */
+  showHud: boolean;
+  /** Reticle and tag on the shuttle. */
+  showLockOn: boolean;
   /** Line width as a fraction of the frame height. */
   lineWidth: number;
   /** Colours cycled per shot. */
@@ -25,6 +29,8 @@ export const defaultStyle: OverlayStyle = {
   showMarkers: true,
   recentShots: 2,
   showSpeed: true,
+  showHud: true,
+  showLockOn: true,
   lineWidth: 0.006,
   palette: ['#ffd60a', '#00e5ff', '#ff4d6d', '#7cff6b', '#c77dff'],
 };
@@ -64,15 +70,11 @@ export function renderOverlay(ctx: Ctx, track: Track, t: number, w: number, h: n
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  let speedLabel: { text: string; colour: string } | null = null;
   const rally = track.rallies.find((r) => pts[now].frame >= r.startFrame && pts[now].frame <= r.endFrame + 1);
   if (rally) {
     let current = 0;
     for (const s of rally.shots) if (s.startIdx <= now) current = s.index;
-    const cur = rally.shots[current];
-    if (cur && style.showSpeed && cur.initialSpeedKmh !== undefined && cur.startIdx <= now) {
-      speedLabel = { text: `SHOT ${current + 1}  ${Math.round(cur.initialSpeedKmh)} km/h`, colour: style.palette[current % style.palette.length] };
-    }
+
     for (const s of rally.shots) {
       if (s.startIdx > now) break;
       if (s.index <= current - Math.max(1, style.recentShots)) continue;
@@ -109,34 +111,127 @@ export function renderOverlay(ctx: Ctx, track: Track, t: number, w: number, h: n
       ctx.stroke();
     }
     const p = pts[now];
-    if (p.visible) {
+    if (p.visible && !style.showLockOn) {
       ctx.globalAlpha = 1;
       marker(ctx, p.x * w, p.y * h, lw * 1.2, '#ffffff', 'dot');
     }
   }
-  if (speedLabel) drawLabel(ctx, speedLabel.text, speedLabel.colour, w, h);
+
+  const hud = hudState(track, now, t);
+  const speed = style.showSpeed ? hud.speedKmh : undefined;
+  const hudBottom = style.showHud ? drawHud(ctx, w, h, hud.rallyTime, hud.shotCount, speed) : 0;
+  if (style.showLockOn && pts[now].visible) drawLockOn(ctx, pts[now].x * w, pts[now].y * h, w, h, speed, hudBottom);
   ctx.restore();
 }
 
-/** Speed pill in the top-left corner, sized to the frame. */
-function drawLabel(ctx: Ctx, text: string, colour: string, w: number, h: number) {
-  const size = Math.max(14, Math.round(h * 0.045));
-  const pad = size * 0.5, x = Math.round(w * 0.03), y = Math.round(h * 0.04);
+/** What the HUD shows at frame `now`: the current rally, or the last one that ended. */
+export function hudState(track: Track, now: number, t: number) {
+  const pts = track.points;
+  const frame = pts[now]?.frame ?? 0;
+  let rally = track.rallies.find((r) => frame >= r.startFrame && frame <= r.endFrame);
+  const live = !!rally;
+  if (!rally) rally = [...track.rallies].reverse().find((r) => r.endFrame < frame);
+  if (!rally) return { rallyTime: 0, shotCount: 0, speedKmh: undefined as number | undefined, live };
+  const startT = pts[rally.shots[0]?.startIdx ?? 0]?.t ?? 0;
+  const lastShot = rally.shots[rally.shots.length - 1];
+  const endT = live ? t : pts[lastShot?.endIdx ?? 0]?.t ?? t;
+  let cur = rally.shots[0];
+  for (const s of rally.shots) if (s.startIdx <= now) cur = s;
+  return {
+    rallyTime: Math.max(0, endT - startT),
+    shotCount: live ? (cur ? cur.index + 1 : 0) : rally.shots.length,
+    speedKmh: live ? cur?.initialSpeedKmh : undefined,
+    live,
+  };
+}
+
+const HUD_BG = 'rgba(10, 22, 40, 0.82)';
+const HUD_FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+
+function fmtTime(sec: number) {
+  const m = Math.floor(sec / 60), s = sec - m * 60;
+  return `${String(m).padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}`;
+}
+
+/** Three panels across the top, like a broadcast score bug. Returns the bar's bottom edge. */
+function drawHud(ctx: Ctx, w: number, h: number, rallyTime: number, shots: number, speed: number | undefined): number {
+  const unit = Math.min(w, h * 1.2);
+  const margin = Math.round(w * 0.02), gap = Math.round(unit * 0.012);
+  const ph = Math.round(unit * 0.1), top = Math.round(h * 0.03);
+  // On wide frames the bar stays compact in the top-left instead of spanning the width.
+  const total = Math.min(w - margin * 2, unit * 0.95);
+  const panelW = (total - gap * 2) / 3;
+  const panels: { label: string; value: string; unit?: string; accent: string }[] = [
+    { label: 'RALLY TIME', value: fmtTime(rallyTime), accent: '#00e5ff' },
+    { label: 'RALLY COUNT', value: String(shots), unit: 'SHOT', accent: '#ffd60a' },
+    { label: 'SHOT SPEED', value: speed === undefined ? '--' : String(Math.round(speed)), unit: 'km/h', accent: '#ff4d6d' },
+  ];
   ctx.globalAlpha = 1;
-  ctx.font = `700 ${size}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.textBaseline = 'middle';
-  const tw = ctx.measureText(text).width;
-  const bh = size + pad * 1.2;
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.textBaseline = 'alphabetic';
+  panels.forEach((p, i) => {
+    const x = margin + i * (panelW + gap);
+    ctx.fillStyle = HUD_BG;
+    ctx.fillRect(x, top, panelW, ph);
+    ctx.fillStyle = p.accent;
+    ctx.fillRect(x, top, Math.max(2, unit * 0.005), ph);
+    ctx.fillStyle = p.accent;
+    ctx.font = `600 ${Math.round(ph * 0.17)}px ${HUD_FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillText(p.label, x + ph * 0.18, top + ph * 0.28);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `700 ${Math.round(ph * 0.5)}px ${HUD_FONT}`;
+    ctx.fillText(p.value, x + ph * 0.18, top + ph * 0.82);
+    if (p.unit) {
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      ctx.font = `600 ${Math.round(ph * 0.16)}px ${HUD_FONT}`;
+      ctx.textAlign = 'right';
+      ctx.fillText(p.unit, x + panelW - ph * 0.12, top + ph * 0.82);
+    }
+  });
+  return top + ph;
+}
+
+/** Corner-bracket reticle on the shuttle with a "LOCK ON" tag. */
+function drawLockOn(ctx: Ctx, x: number, y: number, w: number, h: number, speed: number | undefined, minY = 0) {
+  const unit = Math.min(w, h * 1.2);
+  const r = unit * 0.03, k = r * 0.45;
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = '#ffd60a';
+  ctx.lineWidth = Math.max(1.5, unit * 0.004);
   ctx.beginPath();
-  ctx.roundRect(x, y, tw + pad * 2 + size * 0.6, bh, bh / 2);
-  ctx.fill();
-  ctx.fillStyle = colour;
+  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    ctx.moveTo(x + sx * r, y + sy * (r - k));
+    ctx.lineTo(x + sx * r, y + sy * r);
+    ctx.lineTo(x + sx * (r - k), y + sy * r);
+  }
+  ctx.stroke();
   ctx.beginPath();
-  ctx.arc(x + pad + size * 0.2, y + bh / 2, size * 0.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#ffffff';
-  ctx.fillText(text, x + pad + size * 0.6, y + bh / 2);
+  ctx.arc(x, y, r * 0.35, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const fs = Math.round(unit * 0.026);
+  const line1 = 'LOCK ON', line2 = speed === undefined ? '' : `${Math.round(speed)} km/h`;
+  ctx.font = `700 ${fs}px ${HUD_FONT}`;
+  const tw = Math.max(ctx.measureText(line2).width, fs * 3.2);
+  const bw = tw + fs * 0.8, bh = line2 ? fs * 2.3 : fs * 1.3;
+  // Tag sits up-right of the reticle; it flips below or left to stay clear of the HUD and the frame edge.
+  const tx = x + r * 1.3 + bw > w ? x - r * 1.3 - bw : x + r * 1.3;
+  let ty = y - r * 1.4;
+  if (ty - bh < minY + fs * 0.3) ty = y + r * 1.4 + bh;
+  ctx.fillStyle = HUD_BG;
+  ctx.fillRect(tx, ty - bh, bw, bh);
+  ctx.fillStyle = '#ffd60a';
+  ctx.fillRect(tx, ty - bh, Math.max(2, unit * 0.004), bh);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = `600 ${Math.round(fs * 0.6)}px ${HUD_FONT}`;
+  ctx.fillStyle = '#ffd60a';
+  ctx.fillText(line1, tx + fs * 0.4, ty - bh + fs * 0.85);
+  if (line2) {
+    ctx.font = `700 ${fs}px ${HUD_FONT}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(line2, tx + fs * 0.4, ty - fs * 0.4);
+  }
 }
 
 /** Court outline from tapped corners (normalized), drawn while calibrating and after. */

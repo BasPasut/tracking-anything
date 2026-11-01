@@ -290,7 +290,15 @@ export function Studio() {
             </label>
             <label className="flex min-h-8 items-center gap-2">
               <input type="checkbox" className="h-5 w-5" checked={style.showSpeed} onChange={(e) => setStyle({ ...style, showSpeed: e.target.checked })} />
-              ป้ายความเร็วบนวิดีโอ
+              แสดงความเร็ว (km/h)
+            </label>
+            <label className="flex min-h-8 items-center gap-2">
+              <input type="checkbox" className="h-5 w-5" checked={style.showHud} onChange={(e) => setStyle({ ...style, showHud: e.target.checked })} />
+              แถบสถิติด้านบน (เวลา rally / ช็อต / ความเร็ว)
+            </label>
+            <label className="flex min-h-8 items-center gap-2">
+              <input type="checkbox" className="h-5 w-5" checked={style.showLockOn} onChange={(e) => setStyle({ ...style, showLockOn: e.target.checked })} />
+              เป้าล็อกลูก
             </label>
           </fieldset>
         </details>

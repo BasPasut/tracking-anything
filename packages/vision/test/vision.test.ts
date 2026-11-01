@@ -138,8 +138,28 @@ describe('renderOverlay', () => {
       get: (_t, prop) => prop === 'moveTo' ? (x: number, y: number) => moves.push([x, y]) : () => {},
       set: () => true,
     }) as unknown as CanvasRenderingContext2D;
-    renderOverlay(ctx, track, 79 / fps, 100, 100, { ...defaultStyle, trailFrames: 0, showMarkers: false, recentShots: 2 });
+    renderOverlay(ctx, track, 79 / fps, 100, 100, { ...defaultStyle, trailFrames: 0, showMarkers: false, recentShots: 2, showHud: false, showLockOn: false });
     // Shot paths start at their first point: only shots 2 and 3 should be drawn.
     expect(moves.map(([x]) => Math.round(x))).toEqual([Math.round(pts[40].x * 100), Math.round(pts[60].x * 100)]);
+  });
+});
+
+describe('hudState', () => {
+  it('counts shots and rally time in a live rally, freezes after it ends', async () => {
+    const { hudState } = await import('../src');
+    const pts: TrackPoint[] = Array.from({ length: 100 }, (_, i) => ({ frame: i, t: i / 10, x: 0.5, y: 0.5, visible: i < 60, confidence: 1, interpolated: false }));
+    const track = {
+      schemaVersion: 1 as const, sport: 'badminton', fps: 10, width: 100, height: 100, detector: 'test', points: pts,
+      rallies: [{ index: 0, startFrame: 10, endFrame: 59, shots: [
+        { index: 0, startIdx: 10, endIdx: 30, startFrame: 10, endFrame: 30, apexIdx: 20, initialSpeedKmh: 120 },
+        { index: 1, startIdx: 30, endIdx: 59, startFrame: 30, endFrame: 59, apexIdx: 40, initialSpeedKmh: 250 },
+      ] }],
+    };
+    const live = hudState(track, 35, 3.5);
+    expect(live).toMatchObject({ shotCount: 2, speedKmh: 250, live: true });
+    expect(live.rallyTime).toBeCloseTo(2.5);
+    const after = hudState(track, 80, 8);
+    expect(after).toMatchObject({ shotCount: 2, speedKmh: undefined, live: false });
+    expect(after.rallyTime).toBeCloseTo(4.9);
   });
 });
