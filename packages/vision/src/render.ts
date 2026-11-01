@@ -9,6 +9,8 @@ export interface OverlayStyle {
   showShotPath: boolean;
   /** Mark hit, apex and landing points of finished shots in the current rally. */
   showMarkers: boolean;
+  /** How many shots of the current rally stay drawn (the current one included). Older ones fade out. */
+  recentShots: number;
   /** Line width as a fraction of the frame height. */
   lineWidth: number;
   /** Colours cycled per shot. */
@@ -19,6 +21,7 @@ export const defaultStyle: OverlayStyle = {
   trailFrames: 20,
   showShotPath: true,
   showMarkers: true,
+  recentShots: 2,
   lineWidth: 0.006,
   palette: ['#ffd60a', '#00e5ff', '#ff4d6d', '#7cff6b', '#c77dff'],
 };
@@ -60,8 +63,11 @@ export function renderOverlay(ctx: Ctx, track: Track, t: number, w: number, h: n
 
   const rally = track.rallies.find((r) => pts[now].frame >= r.startFrame && pts[now].frame <= r.endFrame + 1);
   if (rally) {
+    let current = 0;
+    for (const s of rally.shots) if (s.startIdx <= now) current = s.index;
     for (const s of rally.shots) {
       if (s.startIdx > now) break;
+      if (s.index <= current - Math.max(1, style.recentShots)) continue;
       const colour = style.palette[s.index % style.palette.length];
       const end = Math.min(s.endIdx, now);
       if (style.showShotPath) {
