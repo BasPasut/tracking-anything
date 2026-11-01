@@ -12,7 +12,7 @@ type Status =
   | { kind: "idle" }
   | { kind: "busy"; stage: "load" | "background" | "analyze" | "export"; value: number }
   | { kind: "ready" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; reload?: boolean };
 
 /** Wall clock for the stall watchdog (kept outside the component: it is only read in handlers). */
 const clock = () => performance.now();
@@ -42,6 +42,7 @@ export function Studio() {
   const etaRef = useRef<{ stage: string; t0: number; v0: number } | null>(null);
   const [eta, setEta] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workerRef = useRef<Worker | null>(null);
   /** The request in flight and when the worker last said anything, for the stall watchdog. */
@@ -53,7 +54,13 @@ export function Studio() {
   function getWorker() {
     if (!workerRef.current) {
       const w = new Worker(new URL("../workers/vision.worker.ts", import.meta.url), { type: "module" });
-      w.onerror = (e) => { e.preventDefault(); fail(`โหลดตัวประมวลผลไม่ได้${e.message ? `: ${e.message}` : ""}`); };
+      w.onerror = (e) => {
+        e.preventDefault();
+        // An error before the worker said anything usually means its script is gone:
+        // this tab was loaded from an older deploy. Retrying can't help; a reload can.
+        if (!pendingRef.current?.heard) return fail("โหลดตัวประมวลผลไม่ได้ อาจเป็นเพราะเว็บเพิ่งอัปเดต", true);
+        fail(`ตัวประมวลผลขัดข้อง${e.message ? `: ${e.message}` : ""}`);
+      };
       w.onmessageerror = () => fail("รับข้อมูลจากตัวประมวลผลไม่ได้");
       w.onmessage = (e: MessageEvent<WorkerResponse>) => {
         const m = e.data;
@@ -89,13 +96,17 @@ export function Studio() {
   // A worker that crashed or hung (a phone browser killing it for memory, say) sends
   // nothing. Restart it once in safe mode (one CPU thread, small model), then give up
   // with an error instead of a progress bar that never moves.
-  function fail(reason: string) {
+  function fail(reason: string, stale = false) {
     const p = pendingRef.current;
     pendingRef.current = null;
     workerRef.current?.terminate();
     workerRef.current = null;
     etaRef.current = null;
     setEta(null);
+    if (stale) {
+      setStatus({ kind: "error", message: `${reason} กรุณารีเฟรชหน้าแล้วลองใหม่`, reload: true });
+      return;
+    }
     if (p && p.req.type === "analyze" && p.req.detector === "tracknet" && !p.req.safe) {
       setNotice("ประมวลผลแบบปกติไม่สำเร็จ กำลังลองใหม่แบบประหยัดหน่วยความจำ (ช้ากว่า)");
       setStatus({ kind: "busy", stage: "load", value: 0 });
@@ -207,16 +218,25 @@ export function Studio() {
           <CameraCapture onRecorded={onFile} onCancel={() => setCameraOpen(false)} />
         ) : !videoUrl ? (
           <div className="flex flex-col gap-3">
-            <label
-              className="media-frame flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:border-zinc-500 dark:border-zinc-700"
+            {/* One file input for both the drop zone and the button, so phones (no drag and drop) get a clear button. */}
+            <input ref={fileRef} type="file" accept="video/*" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
+            <div
+              role="button"
+              tabIndex={0}
+              className="media-frame flex aspect-video cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 px-4 text-center text-zinc-500 hover:border-zinc-500 dark:border-zinc-700"
+              onClick={() => fileRef.current?.click()}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") fileRef.current?.click(); }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => { e.preventDefault(); onFile(e.dataTransfer.files[0]); }}
             >
-              <span className="text-lg font-medium">ลากไฟล์วิดีโอมาวาง หรือคลิกเพื่อเลือก</span>
+              <span className="text-lg font-medium [@media(pointer:coarse)]:hidden">ลากไฟล์วิดีโอมาวาง หรือกดปุ่มด้านล่าง</span>
+              <span className="hidden text-lg font-medium [@media(pointer:coarse)]:inline">แตะเพื่อเลือกวิดีโอจากเครื่อง</span>
               <span className="text-sm">MP4 / MOV / WebM · กล้องตั้งนิ่ง 60 fps ขึ้นไปจะแม่นที่สุด</span>
-              <input type="file" accept="video/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
-            </label>
-            <button className="btn self-start" onClick={() => setCameraOpen(true)}>ถ่ายจากกล้องแทน</button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button className="btn" onClick={() => fileRef.current?.click()}>อัปโหลดวิดีโอ</button>
+              <button className="btn btn-quiet" onClick={() => setCameraOpen(true)}>ถ่ายจากกล้อง</button>
+            </div>
           </div>
         ) : (
           // Shrink-wrap the video so the overlay canvas covers exactly the picture, with no letterbox.
@@ -240,7 +260,14 @@ export function Studio() {
           </div>
         )}
         {notice && status.kind === "busy" && <p className="text-sm text-amber-600">{notice}</p>}
-        {status.kind === "error" && <p className="text-sm text-red-600">เกิดข้อผิดพลาด: {status.message}</p>}
+        {status.kind === "error" && (
+          <div className="flex flex-wrap items-center gap-2 text-sm text-red-600">
+            <p>เกิดข้อผิดพลาด: {status.message}</p>
+            {status.reload && (
+              <button type="button" className="btn" onClick={() => location.reload()}>รีเฟรชหน้า</button>
+            )}
+          </div>
+        )}
       </section>
 
       <aside className="studio-panel flex flex-col gap-3 text-sm md:gap-5">
