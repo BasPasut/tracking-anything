@@ -34,6 +34,7 @@ export function CameraCapture({ onRecorded, onCancel }: Props) {
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const [facing, setFacing] = useState<Facing>("environment");
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<MediaTrackSettings | null>(null);
@@ -81,6 +82,21 @@ export function CameraCapture({ onRecorded, onCancel }: Props) {
     };
   }, [facing]);
 
+  // Keep the screen on while recording: a phone that dims and locks mid-rally stops the camera.
+  useEffect(() => {
+    if (!recording || !("wakeLock" in navigator)) return;
+    let released = false;
+    navigator.wakeLock.request("screen").then((lock) => {
+      if (released) lock.release();
+      else wakeLockRef.current = lock;
+    }).catch(() => { /* not allowed (battery saver, iframe): recording still works */ });
+    return () => {
+      released = true;
+      wakeLockRef.current?.release();
+      wakeLockRef.current = null;
+    };
+  }, [recording]);
+
   useEffect(() => {
     if (!recording) return;
     const id = setInterval(() => setElapsed((performance.now() - startedAt) / 1000), 250);
@@ -120,9 +136,9 @@ export function CameraCapture({ onRecorded, onCancel }: Props) {
   const fps = settings?.frameRate ? Math.round(settings.frameRate) : null;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="camera-capture flex flex-col gap-3">
       <div className="relative overflow-hidden rounded-xl bg-black">
-        <video ref={videoRef} autoPlay muted playsInline className="block aspect-video w-full object-contain" />
+        <video ref={videoRef} autoPlay muted playsInline className="media-frame block aspect-video w-full object-contain" />
         {recording && (
           <div className="absolute left-3 top-3 flex items-center gap-2 rounded-full bg-black/60 px-3 py-1 text-sm text-white">
             <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500" />
@@ -136,6 +152,7 @@ export function CameraCapture({ onRecorded, onCancel }: Props) {
         )}
       </div>
 
+      <div className="camera-controls flex flex-col gap-3">
       {error && <p className="text-sm text-red-600">{error}</p>}
       {fps !== null && fps < 50 && !error && (
         <p className="text-sm text-amber-600">
@@ -158,6 +175,7 @@ export function CameraCapture({ onRecorded, onCancel }: Props) {
         <button className="text-zinc-500 underline" disabled={recording} onClick={onCancel}>ยกเลิก</button>
       </div>
       <p className="text-xs text-zinc-500">ตั้งกล้องบนขาตั้งให้นิ่ง เห็นคอร์ททั้งสนาม แล้วกดเริ่มอัด</p>
+      </div>
     </div>
   );
 }
