@@ -48,6 +48,7 @@ export function Studio() {
   /** The request in flight and when the worker last said anything, for the stall watchdog. */
   const pendingRef = useRef<{ req: WorkerRequest; lastMsg: number; heard: boolean } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const lastStageRef = useRef("start");
 
   // Plain functions: they only touch refs and state setters, so the copies bound to the
   // worker's handlers stay valid across renders.
@@ -58,8 +59,11 @@ export function Studio() {
         e.preventDefault();
         // An error before the worker said anything usually means its script is gone:
         // this tab was loaded from an older deploy. Retrying can't help; a reload can.
-        if (!pendingRef.current?.heard) return fail("โหลดตัวประมวลผลไม่ได้ อาจเป็นเพราะเว็บเพิ่งอัปเดต", true);
-        fail(`ตัวประมวลผลขัดข้อง${e.message ? `: ${e.message}` : ""}`);
+        // The detail line is for bug reports: what failed, where, and how far it got.
+        const where = e.filename ? ` @ ${e.filename.split("/").pop()}:${e.lineno}` : "";
+        const detail = ` (รายละเอียด: ${e.message || "no message"}${where}; ขั้นตอนล่าสุด ${lastStageRef.current})`;
+        if (!pendingRef.current?.heard) return fail(`โหลดตัวประมวลผลไม่ได้ อาจเป็นเพราะเว็บเพิ่งอัปเดต${detail}`, true);
+        fail(`ตัวประมวลผลขัดข้อง${detail}`);
       };
       w.onmessageerror = () => fail("รับข้อมูลจากตัวประมวลผลไม่ได้");
       w.onmessage = (e: MessageEvent<WorkerResponse>) => {
@@ -68,6 +72,7 @@ export function Studio() {
         if (p) { p.lastMsg = performance.now(); p.heard = true; }
         if (m.type === "analyzed" || m.type === "exported" || m.type === "error") pendingRef.current = null;
         if (m.type === "progress") {
+          lastStageRef.current = `${m.stage} ${Math.round(m.value * 100)}%`;
           setStatus({ kind: "busy", stage: m.stage, value: m.value });
           // Estimate time left from the rate of the current stage: the model download
           // and the analysis run at very different speeds, so each stage restarts the clock.
@@ -89,6 +94,7 @@ export function Studio() {
   useEffect(() => () => workerRef.current?.terminate(), []);
 
   function send(req: WorkerRequest) {
+    lastStageRef.current = "start";
     pendingRef.current = { req, lastMsg: clock(), heard: false };
     getWorker().postMessage(req);
   }
